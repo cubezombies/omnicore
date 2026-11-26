@@ -38,6 +38,59 @@ const MIGRATIONS: string[] = [
   INSERT INTO channels (name, slug, niche, platforms)
     VALUES ('AI, Actually', 'ai-actually', 'AI and technology',
             '["tiktok","youtube-shorts","instagram-reels"]');
+  `,
+  // v2: Video Factory — settings, productions, per-step progress/cost, assets.
+  `
+  CREATE TABLE settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+  );
+  CREATE TABLE productions (
+    id            INTEGER PRIMARY KEY,
+    channel_id    INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    content_id    INTEGER REFERENCES content_items(id) ON DELETE SET NULL,
+    topic         TEXT NOT NULL,
+    user_notes    TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued','running','failed','completed','cancelled')),
+    current_step  TEXT,
+    error         TEXT,
+    sources       TEXT NOT NULL DEFAULT '[]',
+    brief         TEXT,
+    storyboard    TEXT,
+    output_path   TEXT,
+    duration_sec  REAL,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX idx_productions_channel ON productions(channel_id, created_at);
+  CREATE TABLE production_steps (
+    production_id  INTEGER NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+    step           TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    progress       REAL NOT NULL DEFAULT 0,
+    detail         TEXT NOT NULL DEFAULT '',
+    error          TEXT,
+    cost_usd       REAL NOT NULL DEFAULT 0,
+    started_at     TEXT,
+    finished_at    TEXT,
+    PRIMARY KEY (production_id, step)
+  );
+  CREATE TABLE production_assets (
+    id             INTEGER PRIMARY KEY,
+    production_id  INTEGER NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL,
+    scene_index    INTEGER,
+    path           TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    source_url     TEXT NOT NULL DEFAULT '',
+    license        TEXT NOT NULL DEFAULT '',
+    attribution    TEXT NOT NULL DEFAULT '',
+    meta           TEXT NOT NULL DEFAULT '{}',
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX idx_assets_production ON production_assets(production_id, kind);
   `
 ];
 

@@ -9,6 +9,9 @@ files:
   - package.json
   - "!**/*.map"
 asar: true
+# FFmpeg must be a real file on disk to be spawned.
+asarUnpack:
+  - node_modules/ffmpeg-static/**
 win:
   target:
     - target: nsis

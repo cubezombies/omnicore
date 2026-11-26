@@ -23,6 +23,24 @@ scripts\dev.cmd preview    :: run the production build
 
 Set `TMP`/`TEMP` to an `F:` folder before running `npm run dist` by hand (`dev.cmd` does this).
 
+## Video Factory (Studio)
+
+Studio turns a topic (or a content item via **Produce video**) into a finished 1080×1920 H.264/AAC MP4 with narration, visuals and word-synchronised burned-in captions. Pipeline steps, each persisted, resumable and individually re-runnable:
+
+| Step | Default provider (free) | Alternatives |
+|---|---|---|
+| Research | Wikipedia API (article intros + URLs); a linked item's research notes | — |
+| Brief | Deterministic fact selection: verbatim sentences from cited sources | — |
+| Script & storyboard | Extractive writer (no AI) | Local OpenAI-compatible LLM (LM Studio, Ollama, …) |
+| Narration | Windows speech (SAPI) with per-word timings | — (adapter interface in `src/main/providers/types.ts`) |
+| Visuals | Freely licensed images from the cited Wikipedia articles, then Commons search (licence- and relevance-filtered), then local title cards | ComfyUI (local generation) |
+| Captions | ASS from narration word timings | — |
+| Render | Bundled FFmpeg: Ken Burns stills, loudness-normalised narration, optional ducked music bed | Custom FFmpeg path |
+
+Output per production: `<data dir>\productions\<id>inal.mp4` plus `credits.txt` (sources + image licences/attribution for the post description). Every step records attempts, errors, progress and cost (all built-in providers cost $0). Failed or cancelled productions resume from the failed step; productions interrupted by an app exit are marked failed and retryable.
+
+Live end-to-end check (needs internet + Windows): `set AIMO_E2E=1 && npx vitest run tests/e2e.test.ts` (output kept in `.tmp\e2e`). Through the real app: `AIMO_SMOKE_PRODUCE="<topic>" node scripts/smoke.mjs`.
+
 ## Data location
 
 All user data (SQLite database plus the Chromium profile) goes in one folder:

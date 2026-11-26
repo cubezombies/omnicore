@@ -1,4 +1,13 @@
+import path from 'node:path';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
+import {
+  VISUAL_PROVIDERS,
+  WRITERS,
+  isStepName,
+  type NewProduction,
+  type ProviderSettings,
+  type StepName
+} from '../shared/production';
 
 /** Thrown for malformed input from the renderer. The renderer is treated as untrusted. */
 export class ValidationError extends Error {}
@@ -53,4 +62,67 @@ export function patch(v: unknown): ContentPatch {
   if (o.researchNotes !== undefined) p.researchNotes = text(o.researchNotes, 'researchNotes', false);
   if (o.script !== undefined) p.script = text(o.script, 'script', false);
   return p;
+}
+
+// ---- Video Factory -------------------------------------------------------
+
+export function newProduction(v: unknown): NewProduction {
+  const o = object(v, 'production');
+  const topic = text(o.topic, 'title', true)!;
+  return { topic, contentId: o.contentId === undefined || o.contentId === null ? undefined : id(o.contentId, 'contentId') };
+}
+
+export function stepName(v: unknown): StepName {
+  if (!isStepName(v)) throw new ValidationError('Unknown production step');
+  return v;
+}
+
+const str = (v: unknown, name: string, max: number): string => {
+  if (typeof v !== 'string') throw new ValidationError(`${name} must be text`);
+  if (v.length > max) throw new ValidationError(`${name} is too long`);
+  return v.trim();
+};
+const httpUrl = (v: unknown, name: string): string => {
+  const s = str(v, name, 500);
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error();
+  } catch {
+    throw new ValidationError(`${name} must be an http(s) URL`);
+  }
+  return s;
+};
+const num = (v: unknown, name: string, min: number, max: number): number => {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) throw new ValidationError(`${name} must be between ${min} and ${max}`);
+  return v;
+};
+const filePath = (v: unknown, name: string, exts: RegExp): string => {
+  const s = str(v, name, 1000);
+  if (s && (!path.isAbsolute(s) || !exts.test(s))) throw new ValidationError(`${name} must be an absolute path to a ${exts.source} file`);
+  return s;
+};
+
+export function settings(v: unknown): ProviderSettings {
+  const o = object(v, 'settings');
+  if (!(WRITERS as readonly unknown[]).includes(o.writer)) throw new ValidationError('Unknown writer');
+  if (o.narration !== 'windows-sapi') throw new ValidationError('Unknown narration provider');
+  if (!Array.isArray(o.visuals) || o.visuals.some((x) => !(VISUAL_PROVIDERS as readonly unknown[]).includes(x))) {
+    throw new ValidationError('Unknown visual provider');
+  }
+  if (typeof o.wikipediaResearch !== 'boolean') throw new ValidationError('wikipediaResearch must be true or false');
+  return {
+    wikipediaResearch: o.wikipediaResearch,
+    writer: o.writer as ProviderSettings['writer'],
+    llmBaseUrl: httpUrl(o.llmBaseUrl, 'LLM base URL'),
+    llmModel: str(o.llmModel, 'LLM model', 200),
+    narration: 'windows-sapi',
+    voice: str(o.voice, 'Voice', 200),
+    speechRate: Math.round(num(o.speechRate, 'Speech rate', -10, 10)),
+    visuals: [...new Set(o.visuals as ProviderSettings['visuals'])],
+    comfyUrl: httpUrl(o.comfyUrl, 'ComfyUI URL'),
+    comfyCheckpoint: str(o.comfyCheckpoint, 'ComfyUI checkpoint', 300),
+    musicPath: filePath(o.musicPath, 'Music file', /\.(mp3|wav|m4a|aac|ogg|flac)$/i),
+    musicVolume: num(o.musicVolume, 'Music volume', 0, 1),
+    ffmpegPath: filePath(o.ffmpegPath, 'FFmpeg path', /\.exe$/i)
+  };
 }

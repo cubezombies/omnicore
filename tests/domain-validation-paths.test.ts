@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { canTransition, nextStage, previousStage, STAGES, LIMITS } from '../src/shared/domain';
 import * as v from '../src/main/validation';
-import { resolveDataDir, DATA_DIR_ENV } from '../src/main/paths';
+import { resolveDataDir, resolveMediaPath, DATA_DIR_ENV } from '../src/main/paths';
 
 describe('workflow rules', () => {
   it('only allows one step forward or any step back', () => {
@@ -67,5 +67,30 @@ describe('data directory', () => {
   });
   it('allows sibling folders with a shared prefix', () => {
     expect(resolveDataDir({ ...base, env: { [DATA_DIR_ENV]: 'F:\\Apps\\AIMO-data' } })).toBe(path.resolve('F:\\Apps\\AIMO-data'));
+  });
+});
+
+describe('media URL resolution', () => {
+  const root = path.resolve('/media-root/productions');
+  it('maps production media URLs into that production folder', () => {
+    expect(resolveMediaPath(root, 'omnicore-media://p/3/images/scene-01.jpg?v=2')).toBe(path.resolve(root, '3', 'images', 'scene-01.jpg'));
+  });
+  it('keeps URL-normalised dot segments inside the productions folder', () => {
+    // The URL parser resolves %2E%2E itself; the result can only be another production's file.
+    expect(resolveMediaPath(root, 'omnicore-media://p/3/%2E%2E/4/final.mp4')).toBe(path.resolve(root, '4', 'final.mp4'));
+    expect(resolveMediaPath(root, 'omnicore-media://p/3/%2E%2E/%2E%2E/x.db')).toBeNull();
+  });
+  it('rejects traversal, other hosts and malformed ids', () => {
+    for (const u of [
+      'omnicore-media://p/3/..%2F..%2Fai-media-operations.db',
+      'omnicore-media://p/3/images/..%5C..%5Cx.db',
+      'omnicore-media://p/3/C%3A%5CWindows%5Cwin.ini',
+      'omnicore-media://x/3/final.mp4',
+      'omnicore-media://p/abc/final.mp4',
+      'omnicore-media://p/3',
+      'omnicore-media://p/3/%E0%A4%A'
+    ]) {
+      expect(resolveMediaPath(root, u), u).toBeNull();
+    }
   });
 });

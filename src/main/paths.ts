@@ -33,3 +33,27 @@ export function resolveDataDir(i: DataDirInput): string {
   }
   return dir;
 }
+
+/**
+ * Map omnicore-media://p/<productionId>/<relative path> to a file inside that
+ * production's folder. Returns null for anything malformed or outside it.
+ */
+export function resolveMediaPath(productionsDir: string, rawUrl: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  let parts: string[];
+  try {
+    parts = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  if (u.hostname !== 'p' || parts.length < 2 || !/^\d+$/.test(parts[0])) return null;
+  if (parts.some((p) => p === '..' || p.includes('/') || p.includes('\\') || p.includes(':'))) return null;
+  const prodDir = path.resolve(productionsDir, parts[0]);
+  const file = path.resolve(prodDir, ...parts.slice(1));
+  return isInside(file, prodDir) && file !== prodDir ? file : null;
+}

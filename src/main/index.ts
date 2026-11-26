@@ -1,11 +1,17 @@
-import { app, BrowserWindow, dialog, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, net, protocol, session, shell, type IpcMainInvokeEvent } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { IPC } from '../shared/domain';
+import { MEDIA_SCHEME } from '../shared/production';
 import { openDatabase } from './db/database';
+import { ProductionRepository } from './db/productions';
 import { Repository } from './db/repository';
+import { resolveFfmpeg } from './media/ffmpeg';
+import { ProductionRunner } from './pipeline/runner';
+import { buildProviders } from './providers/registry';
 import { registerIpc } from './ipc';
-import { DATA_DIR_ENV, resolveDataDir } from './paths';
+import { DATA_DIR_ENV, resolveDataDir, resolveMediaPath } from './paths';
 
 // Resolve and apply the data directory before anything else touches userData,
 // so the database and the Chromium profile both live outside the install dir.
@@ -30,6 +36,11 @@ function prepareDataDir(): string {
 const dataDir = prepareDataDir();
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'session'));
+
+// Production media (previews) are served from the data dir through a locked-down custom scheme.
+protocol.registerSchemesAsPrivileged([
+  { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+]);
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL; // set by electron-vite in dev only
 const RENDERER_FILE = path.join(__dirname, '../renderer/index.html');
@@ -151,11 +162,59 @@ function runSmoke(win: BrowserWindow): void {
         await shot('dashboard', `window.api.createContent(1, { title: 'Why AI agents keep failing at simple tasks', summary: 'Hook: the demo vs reality gap' })
           .then((i) => window.api.moveContent(i.id, 'research')).then(() => document.querySelectorAll('[data-nav]')[1].click()).then(() => document.querySelectorAll('[data-nav]')[0].click())`);
       }
+      const produceTopic = process.env.AIMO_SMOKE_PRODUCE; // optional: full topic → MP4 run through the real UI bridge
+      if (produceTopic) {
+        const r = await win.webContents.executeJavaScript(`
+          (async () => {
+            const p = await window.api.createProduction(1, { topic: ${JSON.stringify(produceTopic)} });
+            const t0 = Date.now();
+            for (;;) {
+              await new Promise((r) => setTimeout(r, 1000));
+              const x = await window.api.getProduction(p.id);
+              if (['completed', 'failed', 'cancelled'].includes(x.status) || Date.now() - t0 > 900000) {
+                return { id: x.id, status: x.status, error: x.error, outputPath: x.outputPath, durationSec: x.durationSec, steps: x.steps.map((s) => s.step + ': ' + s.detail) };
+              }
+            }
+          })()`);
+        console.log(`SMOKE PRODUCTION ${JSON.stringify(r)}`);
+        if (r.status !== 'completed') return fail(`production ${r.status}: ${r.error}`);
+        if (shotDir) {
+          await win.webContents.executeJavaScript(`document.querySelectorAll('[data-nav]')[2].click()`);
+          await new Promise((res) => setTimeout(res, 1500));
+          fs.writeFileSync(path.join(shotDir, 'studio.png'), (await win.webContents.capturePage()).toPNG());
+        }
+      }
+      if (process.env.AIMO_SMOKE_MEDIA) {
+        // Verify production media is reachable through the custom scheme and playable in <video>.
+        const m = await win.webContents.executeJavaScript(`
+          (async () => {
+            document.querySelectorAll('[data-nav]')[2].click();
+            for (let i = 0; i < 100 && !document.querySelector('.preview video'); i++) await new Promise((r) => setTimeout(r, 100));
+            const v = document.querySelector('.preview video');
+            if (!v) return { video: 'missing' };
+            for (let i = 0; i < 100 && v.readyState < 1 && !v.error; i++) await new Promise((r) => setTimeout(r, 100));
+            const credits = await fetch(v.src.replace(/final\.mp4.*$/, 'credits.txt')).then((r) => r.status + ':' + r.headers.get('content-type'), (e) => 'ERR ' + e);
+            const outside = await fetch(v.src.replace(/final\.mp4.*$/, '..%2F..%2Fai-media-operations.db')).then((r) => r.status, (e) => 'ERR');
+            return { readyState: v.readyState, error: v.error && v.error.code, duration: v.duration, w: v.videoWidth, h: v.videoHeight, credits, outside };
+          })()`);
+        console.log(`SMOKE MEDIA ${JSON.stringify(m)}`);
+        if (!(m.readyState >= 1 && m.w === 1080 && m.h === 1920)) return fail('preview video not playable');
+      }
       console.log('SMOKE OK');
       app.exit(0);
     } catch (e) {
       fail(String(e));
     }
+  });
+}
+
+/** omnicore-media://p/<productionId>/<relative path> → file inside that production's folder only. */
+function registerMediaProtocol(productionsDir: string): void {
+  const root = path.resolve(productionsDir);
+  protocol.handle(MEDIA_SCHEME, (req) => {
+    const file = resolveMediaPath(root, req.url);
+    if (!file || !fs.existsSync(file)) return new Response('Not found', { status: 404 });
+    return net.fetch(pathToFileURL(file).toString(), { headers: req.headers });
   });
 }
 
@@ -175,7 +234,37 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionCheckHandler(() => false);
 
     const db = openDatabase(path.join(dataDir, 'ai-media-operations.db'));
-    registerIpc(new Repository(db), { version: app.getVersion(), dataDir }, isTrustedSender);
+    const repo = new Repository(db);
+    const productions = new ProductionRepository(db);
+    const productionsDir = path.join(dataDir, 'productions');
+    const tmpDir = path.join(dataDir, 'tmp');
+    fs.mkdirSync(productionsDir, { recursive: true });
+    productions.markInterrupted();
+    const runner = new ProductionRunner({
+      repo: productions,
+      productionsDir,
+      settings: () => productions.getSettings(),
+      providers: (s) => buildProviders(s, tmpDir),
+      ffmpeg: (s) => resolveFfmpeg(s.ffmpegPath),
+      channel: (id) => {
+        const c = repo.listChannels().find((x) => x.id === id);
+        return { name: c?.name ?? 'this channel', niche: c?.niche ?? '' };
+      },
+      emit: (id) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.onProductionChanged, id);
+        else if (appContentsId !== null) BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, id);
+      },
+      onScript: (id, sb) => {
+        // Copy the generated script into the linked content item if it has none yet.
+        const p = productions.get(id);
+        const item = p.contentId ? repo.getContent(p.contentId) : null;
+        if (item && !item.script.trim()) {
+          repo.updateContent(item.id, { script: sb.scenes.map((s) => s.narration).join('\n\n') });
+        }
+      }
+    });
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, tmpDir, isTrustedSender });
+    registerMediaProtocol(productionsDir);
     app.on('will-quit', () => db.close());
 
     createWindow();

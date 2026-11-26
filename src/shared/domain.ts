@@ -1,4 +1,12 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
+import type {
+  NewProduction,
+  Production,
+  ProductionSummary,
+  ProviderSettings,
+  ProviderStatus,
+  StepName
+} from './production';
 
 export const STAGES = ['idea', 'research', 'script', 'production', 'review', 'published'] as const;
 export type Stage = (typeof STAGES)[number];
@@ -93,6 +101,21 @@ export interface AppApi {
   deleteContent(id: number): Promise<void>;
   stageCounts(channelId: number): Promise<StageCounts>;
   appInfo(): Promise<AppInfo>;
+
+  // Video Factory
+  listProductions(channelId: number): Promise<ProductionSummary[]>;
+  getProduction(id: number): Promise<Production>;
+  createProduction(channelId: number, input: NewProduction): Promise<Production>;
+  retryProduction(id: number): Promise<void>;
+  rerunProduction(id: number, from: StepName): Promise<void>;
+  cancelProduction(id: number): Promise<void>;
+  deleteProduction(id: number): Promise<void>;
+  showProductionFile(id: number): Promise<void>;
+  getSettings(): Promise<ProviderSettings>;
+  saveSettings(settings: ProviderSettings): Promise<ProviderSettings>;
+  checkProviders(): Promise<ProviderStatus[]>;
+  /** Subscribe to production changes; returns an unsubscribe function. */
+  onProductionChanged(cb: (productionId: number) => void): () => void;
 }
 
 /** IPC channel names, shared so preload and main cannot drift. */
@@ -105,5 +128,17 @@ export const IPC = {
   moveContent: 'content:move',
   deleteContent: 'content:delete',
   stageCounts: 'content:stageCounts',
-  appInfo: 'app:info'
+  appInfo: 'app:info',
+  listProductions: 'productions:list',
+  getProduction: 'productions:get',
+  createProduction: 'productions:create',
+  retryProduction: 'productions:retry',
+  rerunProduction: 'productions:rerun',
+  cancelProduction: 'productions:cancel',
+  deleteProduction: 'productions:delete',
+  showProductionFile: 'productions:show',
+  getSettings: 'settings:get',
+  saveSettings: 'settings:save',
+  checkProviders: 'providers:check',
+  onProductionChanged: 'productions:changed'
 } as const satisfies Record<keyof AppApi, string>;

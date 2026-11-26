@@ -12,12 +12,13 @@ const res = spawnSync(electron, [root], {
     Object.entries({ ...process.env, AIMO_SMOKE: '1', AIMO_DATA_DIR: dataDir }).filter(([k]) => k !== 'ELECTRON_RUN_AS_NODE')
   ),
   encoding: 'utf8',
-  timeout: 60000
+  timeout: process.env.AIMO_SMOKE_PRODUCE ? 960000 : 60000
 });
 process.stdout.write(res.stdout ?? '');
 process.stderr.write(res.stderr ?? '');
 const dbExists = fs.existsSync(path.join(dataDir, 'ai-media-operations.db'));
-fs.rmSync(dataDir, { recursive: true, force: true });
+if (process.env.AIMO_SMOKE_PRODUCE) console.log(`kept smoke data dir: ${dataDir}`);
+else fs.rmSync(dataDir, { recursive: true, force: true });
 if (res.status !== 0 || !/SMOKE OK/.test(res.stdout ?? '') || !dbExists) {
   console.error(`smoke failed (exit ${res.status}, db created: ${dbExists})`);
   process.exit(1);

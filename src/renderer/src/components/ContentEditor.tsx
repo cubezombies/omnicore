@@ -28,6 +28,7 @@ export function ContentEditor({ channelId, initial, onClose, onChanged }: Props)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [produced, setProduced] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -78,6 +79,17 @@ export function ContentEditor({ channelId, initial, onClose, onChanged }: Props)
     if (!item) return;
     if (dirty) await save();
     await run(() => window.api.moveContent(item.id, to));
+  }
+
+  async function produce() {
+    if (!item) return;
+    if (dirty) await save();
+    try {
+      const p = await window.api.createProduction(channelId, { topic: title.trim() || item.title, contentId: item.id });
+      setProduced(`Production #${p.id} started. Follow it in Studio.`);
+    } catch (e) {
+      setError(message(e));
+    }
   }
 
   async function remove() {
@@ -139,7 +151,13 @@ export function ContentEditor({ channelId, initial, onClose, onChanged }: Props)
             </button>
           )}
           <span className="spacer" />
-          {saved && !dirty && <span className="muted" role="status">Saved</span>}
+          {saved && !dirty && !produced && <span className="muted" role="status">Saved</span>}
+          {produced && <span className="muted small" role="status">{produced}</span>}
+          {item && (
+            <button type="button" className="secondary" onClick={() => void produce()} disabled={busy} title="Research, script, voice and render a vertical video from this item">
+              Produce video
+            </button>
+          )}
           {backTargets.length > 0 && (
             <select
               aria-label="Send back to stage"
