@@ -12,7 +12,7 @@ import { ProductionRunner } from './pipeline/runner';
 import { buildProviders } from './providers/registry';
 import { registerIpc } from './ipc';
 import { SoundLibrary } from './library';
-import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath } from './paths';
+import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath, resolveSamplePath } from './paths';
 
 // Resolve and apply the data directory before anything else touches userData,
 // so the database and the Chromium profile both live outside the install dir.
@@ -210,10 +210,11 @@ function runSmoke(win: BrowserWindow): void {
 }
 
 /** omnicore-media://p/<productionId>/<relative path> → file inside that production's folder only. */
-function registerMediaProtocol(productionsDir: string, libraryDir: string): void {
+function registerMediaProtocol(productionsDir: string, libraryDir: string, samplesDir: string): void {
   const root = path.resolve(productionsDir);
   protocol.handle(MEDIA_SCHEME, (req) => {
-    const file = new URL(req.url).hostname === 'lib' ? resolveLibraryPath(libraryDir, req.url) : resolveMediaPath(root, req.url);
+    const host = new URL(req.url).hostname;
+    const file = host === 'lib' ? resolveLibraryPath(libraryDir, req.url) : host === 'sample' ? resolveSamplePath(samplesDir, req.url) : resolveMediaPath(root, req.url);
     if (!file || !fs.existsSync(file)) return new Response('Not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString(), { headers: req.headers });
   });
@@ -267,8 +268,9 @@ if (!app.requestSingleInstanceLock()) {
         }
       }
     });
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, isTrustedSender });
-    registerMediaProtocol(productionsDir, library.dir);
+    const samplesDir = path.join(dataDir, 'samples');
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, isTrustedSender });
+    registerMediaProtocol(productionsDir, library.dir, samplesDir);
     app.on('will-quit', () => db.close());
 
     createWindow();

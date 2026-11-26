@@ -78,10 +78,13 @@ export function assHeader(styles: string[], w = 1080, h = 1920): string {
   ].join('\n');
 }
 
-export function buildAss(cues: CaptionCue[]): string {
+export function buildAss(cues: CaptionCue[], labels: CaptionCue[] = []): string {
   const style = 'Style: Cap,Segoe UI,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,-1,0,0,0,100,100,0,0,1,8,3,2,90,90,620,1';
-  const lines = cues.map(
-    (c) => `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Cap,,0,0,0,,{\\fad(60,0)}${assEscape(c.text.toUpperCase())}`
-  );
-  return `${assHeader([style])}\n${lines.join('\n')}\n`;
+  // Small boxed label, top-left (e.g. "AI-generated illustration").
+  const label = 'Style: Lbl,Segoe UI,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,3,10,0,7,60,60,90,1';
+  const lines = [
+    ...labels.map((l) => `Dialogue: 1,${assTime(l.start)},${assTime(l.end)},Lbl,,0,0,0,,${assEscape(l.text)}`),
+    ...cues.map((c) => `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Cap,,0,0,0,,{\\fad(60,0)}${assEscape(c.text.toUpperCase())}`)
+  ];
+  return `${assHeader([style, label])}\n${lines.join('\n')}\n`;
 }

@@ -1,0 +1,51 @@
+[
+ {
+  "id": "hexgrad/Kokoro-82M",
+  "author": "hexgrad",
+  "downloads": 13698181,
+  "likes": 7527,
+  "lastModified": "2025-04-10T18:12:48.000Z",
+  "createdAt": "2024-12-26T00:20:08.000Z",
+  "pipeline_tag": "text-to-speech",
+  "tags": [
+   "text-to-speech",
+   "en",
+   "arxiv:2306.07691",
+   "arxiv:2203.02395",
+   "base_model:yl4579/StyleTTS2-LJSpeech",
+   "base_model:finetune:yl4579/StyleTTS2-LJSpeech",
+   "doi:10.57967/hf/4329",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": null
+ },
+ {
+  "id": "remsky/kokoro-inno-clone-tuner",
+  "author": "remsky",
+  "downloads": 1710042,
+  "likes": 44,
+  "lastModified": "2026-11-11T07:23:00.000Z",
+  "createdAt": "2026-08-31T02:47:06.000Z",
+  "pipeline_tag": "text-to-speech",
+  "tags": [
+   "onnx",
+   "safetensors",
+   "kokoro-inno-reference-tuner",
+   "kokoro",
+   "voice-cloning",
+   "adapter",
+   "styletts2",
+   "text-to-speech",
+   "en",
+   "dataset:parler-tts/libritts_r_filtered",
+   "dataset:facebook/voxpopuli",
+   "dataset:amphion/Emilia-Dataset",
+   "base_model:hexgrad/Kokoro-82M",
+   "base_model:adapter:hexgrad/Kokoro-82M",
+   "license:apache-2.0",
+   "region:us"
+  ],
+  "cardData": null
+ }
+]

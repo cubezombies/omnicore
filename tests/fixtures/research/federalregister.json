@@ -1,0 +1,67 @@
+{
+ "count": 1637,
+ "results": [
+  {
+   "title": "American SI Exports Program; On-Demand Consortia for Specific Foreign Opportunities",
+   "type": "Notice",
+   "abstract": "The Department of Commerce (the Department), through the International Trade Administration (ITA), establishes the On-Demand Consortia pathway under the Super Intelligence (SI) Exports Program \\1\\ (the Program) authorized by Executive Order 14320: Promoting the Export of the American SI Technology Stack, as laid out in the Call for Proposals for Pre-Set Consortia, released on April 10, 2026 (April 2026 CFP). The Department also provides for re-designation and de- designation of packages designated under the April 2026 CFP or this notice and for the Pre-Set Consortia pathway to reopen at a later date. ---------------------------------------------------------------------------",
+   "document_number": "2026-24107",
+   "html_url": "https://www.federalregister.gov/documents/2026/11/27/2026-24107/american-si-exports-program-on-demand-consortia-for-specific-foreign-opportunities",
+   "pdf_url": "https://www.govinfo.gov/content/pkg/FR-2026-11-27/pdf/2026-24107.pdf",
+   "public_inspection_pdf_url": "https://public-inspection.federalregister.gov/2026-24107.pdf?1795614321",
+   "publication_date": "2026-11-27",
+   "agencies": [
+    {
+     "raw_name": "DEPARTMENT OF COMMERCE",
+     "name": "Commerce Department",
+     "id": 54,
+     "url": "https://www.federalregister.gov/agencies/commerce-department",
+     "json_url": "https://www.federalregister.gov/api/v1/agencies/54",
+     "parent_id": null,
+     "slug": "commerce-department"
+    },
+    {
+     "raw_name": "International Trade Administration",
+     "name": "International Trade Administration",
+     "id": 261,
+     "url": "https://www.federalregister.gov/agencies/international-trade-administration",
+     "json_url": "https://www.federalregister.gov/api/v1/agencies/261",
+     "parent_id": 54,
+     "slug": "international-trade-administration"
+    }
+   ],
+   "excerpts": "federal departments and agencies shall, to the maximum extent permitted by law, use the terms \u201cSuper <span class=\"match\">Intelligence</span>\u201d and \u201cSI\u201d in place of \u201c<span class=\"match\">Artificial</span> <span class=\"match\">Intelligence</span>\u201d and \u201cAI\u201d in public communications.\n \n \n \n \n DATES: \n Applications for designation under the On-Demand Consortia pathway may be submitted beginning November 30, 2026. The Department will accept applications on a rolling basis. \n \n \n ADDRESSES: \n \n Applications must be submitted electronically through the American SI Exports Program submission portal at \n https://SIexports.gov/on-demand. \n The"
+  },
+  {
+   "title": "Medicare Program; Contract Year 2028 Policy and Technical Changes to the Medicare Advantage Program, Medicare Prescription Drug Benefit Program, and Programs of All-Inclusive Care for the Elderly",
+   "type": "Proposed Rule",
+   "abstract": "This proposed rule would revise the Medicare Advantage (Part C), Medicare Prescription Drug Benefit (Part D), and Programs of All- Inclusive Care for the Elderly regulations to implement changes related to marketing and communications, drug coverage, enrollment processes, special needs plans, and other programmatic areas. Additionally, it would establish and implement a mandatory Medicare Advantage (MA) CMS Innovation Center model.",
+   "document_number": "2026-23960",
+   "html_url": "https://www.federalregister.gov/documents/2026/11/25/2026-23960/medicare-program-contract-year-2028-policy-and-technical-changes-to-the-medicare-advantage-program",
+   "pdf_url": "https://www.govinfo.gov/content/pkg/FR-2026-11-25/pdf/2026-23960.pdf",
+   "public_inspection_pdf_url": "https://public-inspection.federalregister.gov/2026-23960.pdf?1795212788",
+   "publication_date": "2026-11-25",
+   "agencies": [
+    {
+     "raw_name": "DEPARTMENT OF HEALTH AND HUMAN SERVICES",
+     "name": "Health and Human Services Department",
+     "id": 221,
+     "url": "https://www.federalregister.gov/agencies/health-and-human-services-department",
+     "json_url": "https://www.federalregister.gov/api/v1/agencies/221",
+     "parent_id": null,
+     "slug": "health-and-human-services-department"
+    },
+    {
+     "raw_name": "Centers for Medicare & Medicaid Services",
+     "name": "Centers for Medicare & Medicaid Services",
+     "id": 45,
+     "url": "https://www.federalregister.gov/agencies/centers-for-medicare-medicaid-services",
+     "json_url": "https://www.federalregister.gov/api/v1/agencies/45",
+     "parent_id": 221,
+     "slug": "centers-for-medicare-medicaid-services"
+    }
+   ],
+   "excerpts": "technologies, like Super <span class=\"match\">Intelligence</span> (SI)-enabled platforms that can be used for outreach, and the explicit prohibition on automated phone calls, has increasingly limited the ability of SNPs to leverage modern communication technologies that some enrollees may prefer and that have become standard practice in healthcare outreach.\n 87 \n \n \n \n \n 87 \n \u2009The terms \u201cSuper <span class=\"match\">Intelligence</span>\u201d and \u201cSI\u201d are used herein to refer to what was formerly known as <span class=\"match\">Artificial</span> <span class=\"match\">Intelligence</span> or AI. See Exec. Order No. 14434, Inaugurating the Era of Super <span class=\"match\">Intelligence</span>, 91 FR 63,129"
+  }
+ ]
+}

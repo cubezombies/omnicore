@@ -24,7 +24,7 @@ run('end-to-end (real providers)', () => {
     // Optional: AIMO_E2E_NARRATION=piper (needs Piper in AIMO_TOOLS_DIR), AIMO_E2E_MUSIC=auto, AIMO_E2E_SFX=1
     const settings = {
       ...repo.getSettings(),
-      ...(process.env.AIMO_E2E_NARRATION === 'piper' ? { narration: 'piper' as const } : {}),
+      ...(process.env.AIMO_E2E_NARRATION === 'piper' ? { narration: 'piper' as const } : process.env.AIMO_E2E_NARRATION === 'sapi' ? { narration: 'windows-sapi' as const } : {}),
       ...(process.env.AIMO_E2E_MUSIC === 'auto' ? { musicMode: 'auto' as const } : {}),
       ...(process.env.AIMO_E2E_SFX === '1' ? { sfxTransitions: true } : {})
     };
@@ -44,7 +44,7 @@ run('end-to-end (real providers)', () => {
       emit: () => {}
     });
     const topic = process.env.AIMO_E2E_TOPIC || 'large language models';
-    const p = repo.create(1, topic, null, '');
+    const p = repo.create(1, topic, null, '', process.env.AIMO_E2E_MODE === 'news' ? 'news' : 'explainer');
     runner.enqueue(p.id);
     await runner.idle();
     const r = repo.get(p.id);

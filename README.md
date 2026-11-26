@@ -29,13 +29,21 @@ Studio turns a topic (or a content item via **Produce video**) into a finished 1
 
 | Step | Default provider (free) | Alternatives |
 |---|---|---|
-| Research | Wikipedia API (article intros + URLs); a linked item's research notes | — |
+| Research | 11 free providers (see below) + a linked item's research notes | SEC EDGAR (opt-in) |
 | Brief | Deterministic fact selection: verbatim sentences from cited sources | — |
 | Script & storyboard | Strata at `http://127.0.0.1:8080/v1` (model discovered via `/models`); grounding-validated with one repair round; falls back to the deterministic writer | Deterministic writer (no AI); any OpenAI-compatible server |
-| Narration | Windows speech (SAPI) with exact word timings | Piper (local neural voice, one-click install of commercially usable voices; sentence-exact, word-estimated timings) |
+| Narration | Kokoro v1.0 via sherpa-onnx (one-click install) | Windows speech (fallback), Piper |
 | Visuals | Freely licensed images from the cited Wikipedia articles, then Commons search (licence- and relevance-filtered), then local title cards | ComfyUI (local generation) |
 | Captions | ASS from narration word timings | — |
 | Render | Bundled FFmpeg: Ken Burns stills, loudness-normalised narration, ducked music bed and transition SFX from the Sound Library | Custom FFmpeg path |
+
+**Research engine (0.4):** a production is an *Explainer* (background + research) or *News* (last N days). Free, key-less providers run in parallel and are individually toggled and health-checked in Providers: Wikipedia, arXiv, OpenAlex, Crossref, GitHub (README + latest release), Hugging Face (model cards), company newsroom RSS (OpenAI, NVIDIA, Google, DeepMind, Hugging Face, AMD, Microsoft, NIST), technology-press RSS (The Verge, Ars Technica, TechCrunch, MIT Technology Review, Tom's Hardware), GDELT news search (rate-limited), Hacker News (discovery only), US Federal Register, and SEC EDGAR full-text (off by default). Summary-only hits are fetched and read; every source keeps URL, publisher, authors, date, kind (research / official / company / reporting / background) and content level. Duplicates (same URL, DOI, arXiv id, title) are merged; text that repeats a press release is grouped with it so reprints never count as independent corroboration. Off-topic, non-English, unreadable, community and (news) stale items are dropped with reasons. News mode refuses to run on papers alone.
+
+**Evidence claims:** the brief is a list of verbatim claims, each classified as confirmed / company claim / independently reported / estimate / speculation / opinion, with supporting sources and an independent-source count. Preprints are attributed ("a preprint on arXiv") unless corroborated. Scripts must cite claim ids; anything not confirmed must be attributed or hedged in the narration, or the script is rejected.
+
+**Narration (0.4):** default narrator is Kokoro v1.0 (Apache-2.0) via the sherpa-onnx 1.13.8 runtime with the voice **Heart** (AI, Actually's presenter; Bella, Emma and other Kokoro voices are selectable). The default applies to fresh installs only; a saved voice choice is never overwritten on upgrade. It is installed from Providers into `<data>\tools\sherpa`; Windows speech is the automatic fallback when Kokoro is not installed (never mid-video). Pronunciation handling (acronyms, units, versions, model names, user overrides) feeds the engine while captions keep the original words; sentence boundaries are found from the audio's own pauses and re-spaced to the configured pause. Scripts are sized to the voice's measured speed instead of speeding the voice up. "Generate voice sample" in Providers plays the current voice and measures its words/second. Voice comparison: `tests/voice-eval.test.ts` (gated by `AIMO_VOICE_EVAL=1`).
+
+**Visual licence policy:** external images are used only with a verified licence that allows commercial use and modification (CC0 / public domain / CC BY; CC BY-SA only if enabled). Non-commercial, no-derivatives, unclear, watermarked, logo/trademark and software-UI images are rejected. Each image keeps source URL, creator, licence and licence URL, attribution, commercial/modification flags and retrieval date; a render-time check blocks any unverified image. AI illustrations are labelled on screen. Title cards are the fallback.
 
 **Script grounding:** every fact scene must cite sources, and numbers, names and acronyms must appear in the cited source; most of a fact scene's key words must come from it; hook/outro may not introduce facts; scripts over 140 words are sent back. Failures get one repair round with the exact problems, then the deterministic fallback (if enabled) with the reason recorded.
 
@@ -43,7 +51,9 @@ Studio turns a topic (or a content item via **Produce video**) into a finished 1
 
 Output per production: `<data dir>\productions\<id>inal.mp4` plus `credits.txt` (sources + image licences/attribution for the post description). Every step records attempts, errors, progress and cost (all built-in providers cost $0). Failed or cancelled productions resume from the failed step; productions interrupted by an app exit are marked failed and retryable.
 
-Live end-to-end check (needs internet + Windows; Strata for the LLM writer): `set AIMO_E2E=1 && npx vitest run tests/e2e.test.ts` (output kept in `.tmp\e2e`). Options: `AIMO_E2E_REQUIRE_LLM=1`, `AIMO_E2E_NARRATION=piper` (installs Piper into `AIMO_TOOLS_DIR`), `AIMO_E2E_MUSIC=auto`, `AIMO_E2E_SFX=1`, `AIMO_E2E_TOPIC=...`. Through the real app: `AIMO_SMOKE_PRODUCE="<topic>" node scripts/smoke.mjs`.
+Live research reports: `AIMO_RESEARCH_LIVE=1 AIMO_RESEARCH_OUT=<dir> npx vitest run tests/research-live.test.ts`.
+
+Live end-to-end check (needs internet + Windows; Strata for the LLM writer; `AIMO_E2E_MODE=news` for news): `set AIMO_E2E=1 && npx vitest run tests/e2e.test.ts` (output kept in `.tmp\e2e`). Options: `AIMO_E2E_REQUIRE_LLM=1`, `AIMO_E2E_NARRATION=piper` (installs Piper into `AIMO_TOOLS_DIR`), `AIMO_E2E_MUSIC=auto`, `AIMO_E2E_SFX=1`, `AIMO_E2E_TOPIC=...`. Through the real app: `AIMO_SMOKE_PRODUCE="<topic>" node scripts/smoke.mjs`.
 
 ## Data location
 

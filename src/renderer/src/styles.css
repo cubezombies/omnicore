@@ -187,3 +187,15 @@ legend { font-weight: 600; padding: 0 var(--s1); }
 .track-edit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
 .install-row { display: flex; gap: var(--s2); }
 .install-row select { flex: 1; }
+
+/* 0.4: evidence + voice samples */
+.claims { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.claim-confirmed { --stage: #86efac; }
+.claim-company-claim { --stage: #fdba74; }
+.claim-reported { --stage: #7dd3fc; }
+.claim-estimate { --stage: #fcd34d; }
+.claim-speculation { --stage: #fca5a5; }
+.claim-opinion { --stage: #c4b5fd; }
+.sample { display: flex; flex-direction: column; gap: var(--s1); }
+.sample audio { width: 100%; }
+.new-prod select { min-width: 220px; }

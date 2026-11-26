@@ -4,6 +4,7 @@ import type {
   AudioTrack,
   AudioTrackPatch,
   PiperVoiceId,
+  VoiceSample,
   SoundGeneratorId,
   NewProduction,
   Production,
@@ -121,6 +122,10 @@ export interface AppApi {
   checkProviders(): Promise<ProviderStatus[]>;
   /** Download Piper and a commercially usable voice into the data dir; returns updated settings. */
   installPiper(voice: PiperVoiceId): Promise<ProviderSettings>;
+  /** Download sherpa-onnx + Kokoro v1.0 (Apache-2.0) into the data dir and select it; returns updated settings. */
+  installKokoro(): Promise<ProviderSettings>;
+  /** Synthesise a short technical sample with the current narration settings and measure its speaking speed. */
+  generateVoiceSample(): Promise<VoiceSample>;
 
   // Music & Sound Library
   listSounds(): Promise<AudioTrack[]>;
@@ -157,6 +162,8 @@ export const IPC = {
   saveSettings: 'settings:save',
   checkProviders: 'providers:check',
   installPiper: 'providers:installPiper',
+  installKokoro: 'providers:installKokoro',
+  generateVoiceSample: 'providers:voiceSample',
   listSounds: 'sounds:list',
   generateSound: 'sounds:generate',
   importSound: 'sounds:import',

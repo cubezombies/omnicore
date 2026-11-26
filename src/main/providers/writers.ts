@@ -1,7 +1,8 @@
-import type { Brief, ProviderStatus, Scene, Source, Storyboard } from '../../shared/production';
+import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS, type Brief, type Claim, type ProviderStatus, type Scene, type Source, type Storyboard } from '../../shared/production';
+import { narrateClaim, QUALIFIERS } from '../research/evidence';
 import { CancelledError } from '../media/ffmpeg';
 import { USER_AGENT } from './http';
-import { extractiveStoryboard, InvalidStoryboardError, validateGrounding, validateStoryboard } from './text';
+import { extractiveStoryboard, InvalidStoryboardError, keywords, titleCase, validateGrounding, validateStoryboard } from './text';
 import { ProviderUnavailableError, type Writer, type WriterResult } from './types';
 
 /** No-AI writer: narrates the brief's sourced facts verbatim. Always available; the offline fallback. */
@@ -13,8 +14,63 @@ export class ExtractiveWriter implements Writer {
     return { id: this.id, kind: 'writer', label: this.label, available: true, detail: 'Built in', costPerUnitUsd: 0 };
   }
   async write(input: { brief: Brief; sources: Source[]; channelName: string }): Promise<WriterResult> {
-    return { storyboard: validateStoryboard(extractiveStoryboard(input.brief, input.channelName), input.sources), units: 0 };
+    const sb = input.brief.claims?.length ? claimStoryboard(input.brief, input.channelName) : extractiveStoryboard(input.brief, input.channelName);
+    validateStoryboard(sb, input.sources);
+    if (input.brief.claims?.length) {
+      const problems = claimProblems(sb, input.brief.claims);
+      if (problems.length) throw new InvalidStoryboardError(problems.join(' '));
+    }
+    return { storyboard: sb, units: 0 };
   }
+}
+
+/** Deterministic storyboard from claim-level evidence: verbatim claims, attributed when not confirmed. */
+export function claimStoryboard(brief: Brief, channelName: string): Storyboard {
+  const claims = brief.claims ?? [];
+  const display = titleCase(brief.topic);
+  const hook = brief.mode === 'news' ? `Here's what's new with ${brief.topic}, and what's actually confirmed.` : `Let's talk about ${brief.topic}, in under a minute.`;
+  const scenes: Scene[] = [
+    { index: 0, role: 'hook', narration: hook, onScreenText: display, visualQuery: brief.topic, sourceIds: [], claimIds: [] },
+    ...claims.map((c, i): Scene => ({
+      index: i + 1,
+      role: 'fact',
+      narration: narrateClaim(c),
+      onScreenText: keywords(c.text, 3).join(' · '),
+      visualQuery: [brief.topic, ...keywords(c.text, 2).filter((k) => !brief.topic.toLowerCase().includes(k.toLowerCase()))].join(' '),
+      sourceIds: [...c.sourceIds],
+      claimIds: [c.id]
+    }))
+  ];
+  scenes.push({ index: scenes.length, role: 'outro', narration: `Sources are in the description. Follow ${channelName} for more.`, onScreenText: `Follow ${channelName}`, visualQuery: brief.topic, sourceIds: [], claimIds: [] });
+  return { title: brief.title, writer: 'extractive', scenes };
+}
+
+/**
+ * Claim rules: every fact scene must state at least one known claim, cite only that
+ * claim's sources, and qualify anything that is not confirmed (company claims and
+ * reports attributed, estimates and speculation hedged, opinions attributed).
+ */
+export function claimProblems(sb: Storyboard, claims: Claim[]): string[] {
+  const byId = new Map(claims.map((c) => [c.id, c]));
+  const problems: string[] = [];
+  for (const sc of sb.scenes) {
+    if (sc.role !== 'fact') continue;
+    const label = `Scene ${sc.index + 1}`;
+    const ids = sc.claimIds ?? [];
+    if (!ids.length) {
+      problems.push(`${label} does not say which evidence claim (C1, C2, …) it states.`);
+      continue;
+    }
+    const unknown = ids.filter((id) => !byId.has(id));
+    if (unknown.length) problems.push(`${label} cites unknown claim ${unknown.join(', ')}.`);
+    for (const c of ids.map((id) => byId.get(id)).filter((c): c is Claim => !!c)) {
+      if (c.kind !== 'confirmed' && !QUALIFIERS[c.kind].test(sc.narration)) {
+        const how = c.kind === 'company-claim' || c.kind === 'reported' || c.kind === 'opinion' ? `attribute it (e.g. "${c.attribution} says")` : 'qualify it (e.g. "may", "estimated")';
+        problems.push(`${label} states ${c.id}, a ${CLAIM_KIND_LABELS[c.kind].toLowerCase()}, as if it were confirmed; ${how}.`);
+      }
+    }
+  }
+  return problems;
 }
 
 export class LlmTimeoutError extends Error {}
@@ -36,6 +92,8 @@ export interface LlmWriterOptions {
   model: string;
   timeoutMs: number;
   maxTokens?: number;
+  /** Word ceiling for the whole script (derived from the narrator's speaking speed). */
+  maxWords?: number;
 }
 
 /** Pick the model to use from a /models listing without assuming an id. */
@@ -48,24 +106,37 @@ const SOURCE_CHARS = 2200;
 /** Hard ceiling so a script fits a sub-60s short at typical TTS speeds (~2.2-2.6 words/s). */
 export const MAX_SCRIPT_WORDS = 140;
 
-export function lengthProblem(sb: Storyboard): string | null {
+export function lengthProblem(sb: Storyboard, maxWords = MAX_SCRIPT_WORDS): string | null {
   const words = sb.scenes.reduce((n, s) => n + s.narration.split(/\s+/).filter(Boolean).length, 0);
-  return words > MAX_SCRIPT_WORDS ? `The script is ${words} words; it must be at most ${MAX_SCRIPT_WORDS} so the video stays under 60 seconds. Shorten it.` : null;
+  return words > maxWords ? `The script is ${words} words; it must be at most ${maxWords} so the video stays under 60 seconds. Shorten it.` : null;
 }
 
-export function buildMessages(input: { brief: Brief; sources: Source[]; channelName: string }): { role: string; content: string }[] {
+/** Word ceiling that keeps a short under ~58 s at the voice's natural speed (never speeding the voice up). */
+export function maxWordsForVoice(wordsPerSec: number): number {
+  if (!wordsPerSec || !Number.isFinite(wordsPerSec)) return MAX_SCRIPT_WORDS;
+  return Math.max(90, Math.min(150, Math.round(wordsPerSec * 50)));
+}
+
+export function buildMessages(input: { brief: Brief; sources: Source[]; channelName: string }, opts: { maxWords?: number } = {}): { role: string; content: string }[] {
   const sources = input.sources
-    .map((s) => `[${s.id}] ${s.title} (${s.publisher})\n${s.excerpt.slice(0, SOURCE_CHARS)}`)
+    .map((s) => `[${s.id}] ${s.title} (${s.publisher}${s.kind ? `, ${SOURCE_KIND_LABELS[s.kind]}` : ''}${s.publishedAt ? `, ${s.publishedAt.slice(0, 10)}` : ''})\n${s.excerpt.slice(0, SOURCE_CHARS)}`)
     .join('\n\n');
-  const facts = input.brief.keyFacts.map((f) => `- [${f.sourceId}] ${f.text}`).join('\n');
+  const claims = input.brief.claims ?? [];
+  const facts = claims.length
+    ? claims
+        .map((c) => `- [${c.id}] (${CLAIM_KIND_LABELS[c.kind]}${c.kind === 'confirmed' ? '' : `, attribute to ${c.attribution}`}; sources ${c.sourceIds.join(', ')}; ${c.independentSources} independent) ${c.text}`)
+        .join('\n')
+    : input.brief.keyFacts.map((f) => `- [${f.sourceId}] ${f.text}`).join('\n');
+  const maxWords = opts.maxWords ?? MAX_SCRIPT_WORDS;
   const system = [
     `You are the head writer of "${input.channelName}", a faceless short-form video channel about ${input.brief.audience.replace(/^Short-form viewers interested in /, '') || 'technology'}.`,
     'You write tight, original, high-retention scripts for 45-60 second vertical videos (TikTok, YouTube Shorts, Reels).',
     'Hard rules, never broken:',
     '1. Every factual statement must come from the SOURCES you are given. Do not use outside knowledge.',
     '2. Never introduce a number, date, name, product, company or acronym that is not written in the cited source.',
-    '3. Each fact scene cites the ids of the sources it restates in "sourceIds".',
-    '4. Write in your own words: conversational, concrete, second person is fine. No hype words, no clickbait lies.',
+    '3. Each fact scene states one or two of the EVIDENCE CLAIMS and lists their ids in "claimIds" (and their sources in "sourceIds").',
+    '4. Respect each claim\'s status: company claims and reports must be attributed ("NVIDIA says…", "according to The Verge…"); estimates and speculation must be hedged ("about", "may"); opinions attributed. Only "Confirmed" claims may be stated plainly.',
+    '5. Write in your own words: conversational, concrete, second person is fine. No hype words, no clickbait lies.',
     'Respond with one JSON object only. No markdown.'
   ].join('\n');
   const user = `TOPIC: ${input.brief.topic}
@@ -73,14 +144,14 @@ export function buildMessages(input: { brief: Brief; sources: Source[]; channelN
 SOURCES:
 ${sources}
 
-STRONGEST FACTS (suggested, from the sources):
+${claims.length ? 'EVIDENCE CLAIMS (the only facts you may state):' : 'STRONGEST FACTS (suggested, from the sources):'}
 ${facts}
 
 Write the script as JSON:
 {"title": string (max 60 chars, curiosity-driven, no claims beyond the sources),
  "scenes": [
   {"role": "hook", "narration": string, "onScreenText": string, "visualQuery": string, "sourceIds": []},
-  {"role": "fact", "narration": string, "onScreenText": string, "visualQuery": string, "sourceIds": ["S1"]},
+  {"role": "fact", "narration": string, "onScreenText": string, "visualQuery": string, "claimIds": ["C1"], "sourceIds": ["S1"]},
   ...
   {"role": "outro", "narration": string, "onScreenText": string, "visualQuery": string, "sourceIds": []}
  ]}
@@ -89,7 +160,7 @@ Structure:
 - hook: 1 sentence, max 18 words. A question, contrast or surprising angle that makes people stay. It must not state facts that are not in the sources.
 - 3 to 5 fact scenes, each 12-28 words, one idea per scene, building on the previous one. Restate the sources plainly; do not add new claims.
 - outro: max 25 words. Tell viewers the sources are in the description and to follow ${input.channelName}; you may end with a question for the comments.
-- Total narration 95-130 words (the video must stay under 60 seconds). Never exceed 140 words.
+- Total narration ${Math.round(maxWords * 0.7)}-${maxWords - 10} words (the video must stay under 60 seconds at a natural pace). Never exceed ${maxWords} words.
 - onScreenText: max 5 punchy words. visualQuery: 2-4 concrete words describing a real image to search for.`;
   return [
     { role: 'system', content: system },
@@ -108,7 +179,7 @@ export class OpenAICompatibleWriter implements Writer {
   private readonly o: Required<LlmWriterOptions>;
 
   constructor(o: LlmWriterOptions) {
-    this.o = { maxTokens: 8000, ...o, baseUrl: o.baseUrl.replace(/\/+$/, '') };
+    this.o = { maxTokens: 8000, maxWords: MAX_SCRIPT_WORDS, ...o, baseUrl: o.baseUrl.replace(/\/+$/, '') };
   }
 
   /** fetch with a hard timeout that is distinguishable from user cancellation. */
@@ -200,16 +271,16 @@ export class OpenAICompatibleWriter implements Writer {
           : `The LLM server at ${this.o.baseUrl} has no model loaded.`
       );
     }
-    const messages = buildMessages(input);
+    const messages = buildMessages(input, { maxWords: this.o.maxWords });
     const grounding = { allowed: `${input.brief.topic} ${input.channelName}` };
     let tokens = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await this.chat(model, messages, signal);
       tokens += r.tokens;
       try {
-        const sb = validateGrounding(parseLlmStoryboard(r.content, input.sources, `${this.id}:${model}`), input.sources, grounding);
-        const tooLong = lengthProblem(sb);
-        if (tooLong) throw new InvalidStoryboardError(tooLong);
+        const sb = validateGrounding(parseLlmStoryboard(r.content, input.sources, `${this.id}:${model}`, input.brief.claims), input.sources, grounding);
+        const problems = [...(input.brief.claims?.length ? claimProblems(sb, input.brief.claims) : []), lengthProblem(sb, this.o.maxWords)].filter((x): x is string => !!x);
+        if (problems.length) throw new InvalidStoryboardError(problems.join(' '));
         return { storyboard: sb, units: tokens };
       } catch (e) {
         if (!(e instanceof InvalidStoryboardError)) throw e;
@@ -226,7 +297,7 @@ export class OpenAICompatibleWriter implements Writer {
   }
 }
 
-export function parseLlmStoryboard(content: string, sources: Source[], writer: string): Storyboard {
+export function parseLlmStoryboard(content: string, sources: Source[], writer: string, claims?: Claim[]): Storyboard {
   const text = content.replace(/<think>[\s\S]*?<\/think>/g, '');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -247,8 +318,17 @@ export function parseLlmStoryboard(content: string, sources: Source[], writer: s
       narration: String(s?.narration ?? '').replace(/\s+/g, ' ').trim(),
       onScreenText: String(s?.onScreenText ?? '').slice(0, 60),
       visualQuery: String(s?.visualQuery ?? '').slice(0, 120),
-      sourceIds: Array.isArray(s?.sourceIds) ? s.sourceIds.map(String) : []
+      sourceIds: Array.isArray(s?.sourceIds) ? s.sourceIds.map(String) : [],
+      claimIds: Array.isArray(s?.claimIds) ? s.claimIds.map(String) : []
     }))
   };
+  // With claim-level evidence, a scene's sources are exactly its claims' sources.
+  if (claims?.length) {
+    const byId = new Map(claims.map((c) => [c.id, c]));
+    for (const sc of sb.scenes) {
+      const ids = (sc.claimIds ?? []).filter((id) => byId.has(id));
+      if (ids.length) sc.sourceIds = [...new Set(ids.flatMap((id) => byId.get(id)!.sourceIds))];
+    }
+  }
   return validateStoryboard(sb, sources);
 }

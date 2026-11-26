@@ -47,15 +47,15 @@ const PRONOUN_START = /^(It|Its|This|That|These|Those|They|Their|He|She|His|Her|
 
 /** Search-engine friendly terms: significant words only, original casing (Commons search ANDs every word). */
 export const searchTerms = (s: string): string =>
-  [...new Set(s.split(/[^\p{L}\p{N}-]+/u).filter((w) => w.length > 2 && !STOP.has(w.toLowerCase())))].join(' ');
+  [...new Set(s.split(/[^\p{L}\p{N}-]+/u).filter((w) => (w.length > 2 || /^[A-Z0-9]{2}$/.test(w)) && !STOP.has(w.toLowerCase())))].join(' ');
 
 /** Lower-cased significant words with a light plural strip, for overlap checks. */
 export const significantTokens = (s: string): Set<string> =>
   new Set(
     s
-      .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
-      .filter((w) => w.length > 2 && !STOP.has(w))
+      .filter((w) => /^[A-Z0-9]{2}$/.test(w) || (w.length > 2 && !STOP.has(w.toLowerCase())))
+      .map((w) => w.toLowerCase())
       .map((w) => w.replace(/(ies)$/, 'y').replace(/(?<=[a-z]{3})l?s$/, ''))
   );
 
@@ -185,7 +185,7 @@ const normNum = (n: string) => n.replace(/[,\s]/g, '').replace(/\.$/, '');
 const numbersIn = (s: string) => (s.match(/\d[\d,]*(?:\.\d+)?%?/g) ?? []).map(normNum);
 
 const COMMON_OPENERS = new Set(
-  "let imagine picture think here here's now today so but yet still instead meanwhile basically simply essentially ever every most many some all one two three first second next finally then under behind inside without unlike just even turns that's it's you you're your we our let's ready stay follow sources source want need curious ok okay yes no not why what how who when where which whether if once while because though although and or nor for after before during since until unless as at by in on of to with from into over the a an this that these those it its they them their he she his her i me my is are was were be been being do does did have has had can could will would should may might must each other another such more less fewer few both either neither every same different new old big small huge tiny real really actually suddenly instead whatever whoever however wait look listen remember notice consider meet say said".split(
+  "according let imagine picture think here here's now today so but yet still instead meanwhile basically simply essentially ever every most many some all one two three first second next finally then under behind inside without unlike just even turns that's it's you you're your we our let's ready stay follow sources source want need curious ok okay yes no not why what how who when where which whether if once while because though although and or nor for after before during since until unless as at by in on of to with from into over the a an this that these those it its they them their he she his her i me my is are was were be been being do does did have has had can could will would should may might must each other another such more less fewer few both either neither every same different new old big small huge tiny real really actually suddenly instead whatever whoever however wait look listen remember notice consider meet say said".split(
     ' '
   )
 );
@@ -225,10 +225,10 @@ export interface GroundingContext {
  */
 export function groundingProblems(sb: Storyboard, sources: Source[], ctx: GroundingContext): string[] {
   const problems: string[] = [];
-  const allText = `${sources.map((s) => `${s.title} ${s.excerpt}`).join(' ')} ${ctx.allowed}`;
+  const allText = `${sources.map((s) => `${s.title} ${s.publisher} ${s.excerpt}`).join(' ')} ${ctx.allowed}`;
   for (const sc of sb.scenes) {
     const cited = sources.filter((s) => sc.sourceIds.includes(s.id));
-    const support = sc.role === 'fact' ? `${cited.map((s) => `${s.title} ${s.excerpt}`).join(' ')} ${ctx.allowed}` : allText;
+    const support = sc.role === 'fact' ? `${cited.map((s) => `${s.title} ${s.publisher} ${s.excerpt}`).join(' ')} ${ctx.allowed}` : allText;
     const supportLower = support.toLowerCase();
     const supportNums = new Set(numbersIn(support));
     const supportStems = new Set([...supportLower.matchAll(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)].map((x) => stem(x[0])));

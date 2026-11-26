@@ -1,15 +1,21 @@
 import type { ProviderSettings, ProviderStatus } from '../../shared/production';
 import { resolveFfmpeg } from '../media/ffmpeg';
 import path from 'node:path';
+import { adapterById, checkAdapter } from '../research/adapters';
+import { RESEARCH_PROVIDERS } from '../../shared/production';
 import { SapiNarration } from './narration';
+import { SherpaKokoroNarration } from './sherpa';
 import { PiperNarration } from './piper';
-import { WikipediaResearch } from './research';
 import type { NarrationProvider, Providers, VisualProvider } from './types';
 import { CommonsVisuals, ComfyVisuals, TitleCardVisuals } from './visuals';
-import { ExtractiveWriter, OpenAICompatibleWriter } from './writers';
+import { ExtractiveWriter, maxWordsForVoice, OpenAICompatibleWriter } from './writers';
 
 const llmWriter = (s: ProviderSettings) =>
-  new OpenAICompatibleWriter({ baseUrl: s.llmBaseUrl, model: s.llmModel, timeoutMs: s.llmTimeoutSec * 1000 });
+  new OpenAICompatibleWriter({ baseUrl: s.llmBaseUrl, model: s.llmModel, timeoutMs: s.llmTimeoutSec * 1000, maxWords: maxWordsForVoice(effectiveWordsPerSec(s)) });
+
+/** Measured speed of the selected voice; until a sample is generated, the engine's speed from the 0.4 voice evaluation. */
+export const effectiveWordsPerSec = (s: ProviderSettings): number =>
+  s.voiceWordsPerSec || (s.narration === 'sherpa' ? 2.15 : s.narration === 'piper' ? 2.05 : 2.25);
 
 export interface ProviderDirs {
   tmpDir: string;
@@ -19,22 +25,30 @@ export interface ProviderDirs {
 
 export const piperExePath = (s: ProviderSettings, dirs: ProviderDirs): string => s.piperPath || path.join(dirs.toolsDir, 'piper', 'piper.exe');
 
-const narrator = (s: ProviderSettings, dirs: ProviderDirs): NarrationProvider =>
-  s.narration === 'piper' ? new PiperNarration(piperExePath(s, dirs), s.piperVoice, dirs.tmpDir, s.speechRate) : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate);
+const kokoro = (s: ProviderSettings, dirs: ProviderDirs) =>
+  new SherpaKokoroNarration(dirs.toolsDir, s.sherpaVoice, dirs.tmpDir, { speechRate: s.speechRate, pauseSec: s.sentencePauseSec, pronunciations: s.pronunciations });
+
+export const narrator = (s: ProviderSettings, dirs: ProviderDirs): NarrationProvider =>
+  s.narration === 'piper'
+    ? new PiperNarration(piperExePath(s, dirs), s.piperVoice, dirs.tmpDir, s.speechRate)
+    : s.narration === 'sherpa'
+      ? kokoro(s, dirs)
+      : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate);
 
 /** Build the provider set from the user's settings. */
 export function buildProviders(s: ProviderSettings, dirs: ProviderDirs): Providers {
   const ffmpeg = () => resolveFfmpeg(s.ffmpegPath);
   const visualById: Record<string, () => VisualProvider> = {
-    'wikimedia-commons': () => new CommonsVisuals(),
+    'wikimedia-commons': () => new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
     comfyui: () => new ComfyVisuals(s.comfyUrl, s.comfyCheckpoint),
     'title-card': () => new TitleCardVisuals(ffmpeg)
   };
   return {
-    research: s.wikipediaResearch ? [new WikipediaResearch()] : [],
+    research: s.researchProviders.map(adapterById),
     writer: s.writer === 'openai-compatible' ? llmWriter(s) : new ExtractiveWriter(),
     fallbackWriter: s.writer === 'openai-compatible' && s.writerFallback ? new ExtractiveWriter() : undefined,
     narration: narrator(s, dirs),
+    fallbackNarration: s.narration === 'windows-sapi' ? undefined : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate),
     visuals: s.visuals.map((id) => visualById[id]?.()).filter((v): v is VisualProvider => !!v)
   };
 }
@@ -49,16 +63,20 @@ export async function checkProviders(s: ProviderSettings, dirs: ProviderDirs): P
       return { id: 'ffmpeg', kind: 'render', label: 'FFmpeg', available: false, detail: (e as Error).message, costPerUnitUsd: 0 };
     }
   })();
+  const research = RESEARCH_PROVIDERS.map((r) => adapterById(r.id));
   const all = [
-    new WikipediaResearch(),
     new ExtractiveWriter(),
     llmWriter(s),
     new SapiNarration(tmpDir, s.voice, s.speechRate),
     new PiperNarration(piperExePath(s, dirs), s.piperVoice, tmpDir, s.speechRate),
-    new CommonsVisuals(),
+    kokoro(s, dirs),
+    new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
     new ComfyVisuals(s.comfyUrl, s.comfyCheckpoint),
     new TitleCardVisuals(() => resolveFfmpeg(s.ffmpegPath))
   ];
-  const statuses = await Promise.all(all.map((p) => p.check(AbortSignal.timeout(15000))));
-  return [...statuses, ffmpeg];
+  const [statuses, researchStatuses] = await Promise.all([
+    Promise.all(all.map((p) => p.check(AbortSignal.timeout(15000)))),
+    Promise.all(research.map((a) => checkAdapter(a, AbortSignal.timeout(12000))))
+  ]);
+  return [...researchStatuses, ...statuses, ffmpeg];
 }

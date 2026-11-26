@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ProviderStatus } from '../../shared/production';
 import { assEscape, assHeader } from '../media/captions';
+import { evaluateLicense, restrictionProblem, type LicenseRecord } from '../media/assetPolicy';
 import { searchTerms, significantTokens } from './text';
 import { runFfmpeg } from '../media/ffmpeg';
 import { downloadTo, fetchJson, fetchRetry } from './http';
@@ -10,8 +11,8 @@ import { ProviderUnavailableError, type VisualProvider, type VisualRequest, type
 // ---------------------------------------------------------------------------
 // Wikimedia Commons: real, freely licensed photos/illustrations with attribution.
 
-const FREE_LICENSE = /^(cc0|cc[- ]by(-sa)?([- ]\d(\.\d)?)?|public domain|pd\b|pd-|no restrictions)/i;
-export const isFreeLicense = (l: string): boolean => FREE_LICENSE.test(l.trim());
+/** Kept for compatibility: true when the licence passes the asset policy (share-alike allowed). */
+export const isFreeLicense = (l: string): boolean => evaluateLicense(l, { allowShareAlike: true }).ok;
 const stripHtml = (s: string) => s.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 
 interface CommonsPage {
@@ -37,6 +38,7 @@ export interface CommonsCandidate {
   attribution: string;
   width: number;
   height: number;
+  licenseRecord: LicenseRecord;
 }
 
 /**
@@ -58,7 +60,7 @@ export function isRelevantFile(title: string, topic: string, description = ''): 
 }
 
 /** Filter Commons search results to relevant, usable, freely licensed raster images. */
-export function pickCommonsCandidates(pages: CommonsPage[], used: Set<string>, topic = ''): CommonsCandidate[] {
+export function pickCommonsCandidates(pages: CommonsPage[], used: Set<string>, topic = '', policy: { allowShareAlike: boolean } = { allowShareAlike: false }): CommonsCandidate[] {
   return [...pages]
     .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
     .flatMap((p): CommonsCandidate[] => {
@@ -67,9 +69,13 @@ export function pickCommonsCandidates(pages: CommonsPage[], used: Set<string>, t
       if (!/^image\/(jpeg|png)$/.test(ii.mime) || ii.width < 400 || ii.height < 400) return [];
       const meta = ii.extmetadata ?? {};
       const license = stripHtml(meta.LicenseShortName?.value ?? '');
-      if (!isFreeLicense(license)) return [];
+      const verdict = evaluateLicense(license, policy);
+      if (!verdict.ok) return [];
+      if (restrictionProblem(stripHtml(meta.Restrictions?.value ?? ''), stripHtml(meta.Categories?.value ?? ''), p.title)) return [];
       if (topic && !isRelevantFile(p.title, topic, stripHtml(meta.ImageDescription?.value ?? '').slice(0, 2000))) return [];
-      const artistRaw = stripHtml(meta.Artist?.value ?? '') || 'Unknown author';
+      const creator = stripHtml(meta.Artist?.value ?? '');
+      if (verdict.attributionRequired && !creator) return []; // cannot attribute → cannot use
+      const artistRaw = creator || 'Unknown author';
       const artist = artistRaw.length > 120 ? `${artistRaw.slice(0, 117)}…` : artistRaw;
       const name = p.title.replace(/^File:/, '');
       return [
@@ -81,7 +87,21 @@ export function pickCommonsCandidates(pages: CommonsPage[], used: Set<string>, t
           license,
           attribution: `"${name}" by ${artist}, ${license}, via ${/commons\.wikimedia\.org/.test(ii.descriptionurl) ? 'Wikimedia Commons' : 'Wikipedia'}`,
           width: ii.width,
-          height: ii.height
+          height: ii.height,
+          licenseRecord: {
+            origin: /commons\.wikimedia\.org/.test(ii.descriptionurl) ? 'commons' : 'wikipedia',
+            sourceUrl: ii.descriptionurl,
+            creator: artist,
+            license,
+            licenseUrl: stripHtml(meta.LicenseUrl?.value ?? ''),
+            attributionRequired: verdict.attributionRequired || /true/i.test(meta.AttributionRequired?.value ?? ''),
+            commercialUse: verdict.commercialUse,
+            modification: verdict.modification,
+            shareAlike: verdict.shareAlike,
+            retrievedAt: new Date().toISOString(),
+            verified: true,
+            notes: verdict.reason
+          }
         }
       ];
     });
@@ -91,7 +111,7 @@ const IMAGE_PROPS = {
   prop: 'imageinfo',
   iiprop: 'url|size|mime|extmetadata',
   iiurlwidth: '1440',
-  iiextmetadatafilter: 'LicenseShortName|Artist|ImageDescription'
+  iiextmetadatafilter: 'LicenseShortName|LicenseUrl|Artist|ImageDescription|AttributionRequired|Restrictions|Categories'
 };
 
 export class CommonsVisuals implements VisualProvider {
@@ -100,6 +120,7 @@ export class CommonsVisuals implements VisualProvider {
   costPerUnitUsd = 0;
   private articleCache = new Map<string, CommonsCandidate[]>();
   constructor(
+    private readonly policy: { allowShareAlike: boolean } = { allowShareAlike: false },
     private readonly api = 'https://commons.wikimedia.org/w/api.php',
     private readonly wikiApi = 'https://en.wikipedia.org/w/api.php'
   ) {}
@@ -111,7 +132,7 @@ export class CommonsVisuals implements VisualProvider {
     if (hit) return hit;
     const q = new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', generator: 'images', gimlimit: '50', titles: key, ...IMAGE_PROPS });
     const r = await fetchJson<{ query?: { pages?: CommonsPage[] } }>(`${this.wikiApi}?${q}`, { signal });
-    const out = pickCommonsCandidates(r.query?.pages ?? [], new Set());
+    const out = pickCommonsCandidates(r.query?.pages ?? [], new Set(), '', this.policy);
     this.articleCache.set(key, out);
     return out;
   }
@@ -138,7 +159,7 @@ export class CommonsVisuals implements VisualProvider {
       ...IMAGE_PROPS
     });
     const r = await fetchJson<{ query?: { pages?: CommonsPage[] } }>(`${this.api}?${q}`, { signal });
-    return pickCommonsCandidates(r.query?.pages ?? [], used, topic);
+    return pickCommonsCandidates(r.query?.pages ?? [], used, topic, this.policy);
   }
 
   async fetch(req: VisualRequest, signal: AbortSignal): Promise<VisualResult | null> {
@@ -161,7 +182,7 @@ export class CommonsVisuals implements VisualProvider {
   private async save(c: CommonsCandidate, req: VisualRequest, signal: AbortSignal, via: string): Promise<VisualResult> {
     const file = req.outBase + c.ext;
     await downloadTo(c.url, file, { signal });
-    return { file, key: c.key, sourceUrl: c.sourceUrl, license: c.license, attribution: c.attribution, meta: { via, width: c.width, height: c.height } };
+    return { file, key: c.key, sourceUrl: c.sourceUrl, license: c.license, attribution: c.attribution, meta: { via, width: c.width, height: c.height, licenseRecord: c.licenseRecord } };
   }
 }
 
@@ -245,8 +266,8 @@ export class ComfyVisuals implements VisualProvider {
         key: `comfy:${promptId}`,
         sourceUrl: '',
         license: 'AI-generated (local)',
-        attribution: `AI-generated with ComfyUI (${this.checkpoint})`,
-        meta: { prompt, seed }
+        attribution: `AI-generated illustration (ComfyUI, ${this.checkpoint})`,
+        meta: { prompt, seed, aiGenerated: true }
       };
     }
     throw new Error('ComfyUI did not finish the image within 10 minutes.');

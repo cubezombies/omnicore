@@ -1,5 +1,26 @@
 import { useEffect, useState } from 'react';
-import { PIPER_VOICES, VISUAL_PROVIDERS, type AudioTrack, type PiperVoiceId, type ProviderSettings, type ProviderStatus, type VisualProviderId } from '../../../shared/production';
+import {
+  KOKORO_VOICES,
+  PIPER_VOICES,
+  RESEARCH_PROVIDERS,
+  VISUAL_PROVIDERS,
+  type AudioTrack,
+  type KokoroVoiceId,
+  type PiperVoiceId,
+  type Pronunciation,
+  type ProviderSettings,
+  type ProviderStatus,
+  type VisualProviderId,
+  type VoiceSample
+} from '../../../shared/production';
+
+export function parsePronunciations(text: string): Pronunciation[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.split('='))
+    .filter((p) => p.length >= 2 && p[0].trim() && p.slice(1).join('=').trim())
+    .map((p) => ({ term: p[0].trim(), say: p.slice(1).join('=').trim() }));
+}
 import { errorText } from './ProductionDetail';
 
 const VISUAL_LABELS: Record<VisualProviderId, string> = {
@@ -17,6 +38,9 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
   const [tracks, setTracks] = useState<AudioTrack[]>([]);
   const [voiceToInstall, setVoiceToInstall] = useState<PiperVoiceId>(PIPER_VOICES[0].id);
   const [installing, setInstalling] = useState(false);
+  const [sampling, setSampling] = useState(false);
+  const [sample, setSample] = useState<VoiceSample | null>(null);
+  const [pronText, setPronText] = useState('');
 
   const check = () => {
     setChecking(true);
@@ -27,7 +51,10 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
       .finally(() => setChecking(false));
   };
   useEffect(() => {
-    void window.api.getSettings().then(setS);
+    void window.api.getSettings().then((x) => {
+      setS(x);
+      setPronText(x.pronunciations.map((p) => `${p.term} = ${p.say}`).join('\n'));
+    });
     void window.api.listSounds().then(setTracks);
     check();
   }, []);
@@ -65,6 +92,37 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function installKokoroNow() {
+    setInstalling(true);
+    setError(null);
+    setMsg('Installing Kokoro (this downloads ~375 MB)…');
+    try {
+      setS(await window.api.installKokoro());
+      setMsg('Kokoro installed and selected.');
+      check();
+    } catch (e) {
+      setError(errorText(e));
+      setMsg(null);
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function playSample() {
+    setSampling(true);
+    setError(null);
+    try {
+      await window.api.saveSettings(s!);
+      const smp = await window.api.generateVoiceSample();
+      setSample(smp);
+      setS(await window.api.getSettings());
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSampling(false);
+    }
+  }
+
   async function save() {
     setError(null);
     try {
@@ -89,12 +147,27 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
 
       <div className="settings-grid">
         <fieldset>
-          <legend>Research</legend>
-          <label className="check">
-            <input type="checkbox" checked={s.wikipediaResearch} onChange={(e) => set('wikipediaResearch', e.target.checked)} />
-            Wikipedia (needs internet)
+          <legend>Research sources</legend>
+          {RESEARCH_PROVIDERS.map((r) => {
+            const st = status?.find((x) => x.id === `research:${r.id}`);
+            return (
+              <label key={r.id} className="check" title={r.description}>
+                <input
+                  type="checkbox"
+                  checked={s.researchProviders.includes(r.id)}
+                  onChange={(e) => set('researchProviders', e.target.checked ? [...s.researchProviders, r.id] : s.researchProviders.filter((x) => x !== r.id))}
+                />
+                <span>
+                  {r.label} <span className="muted small">· {r.category}{st ? (st.available ? ' · reachable' : ' · unreachable') : ''}</span>
+                </span>
+              </label>
+            );
+          })}
+          <label className="field">
+            <span>News mode: only use items from the last {s.newsWindowDays} days</span>
+            <input type="number" min={1} max={365} value={s.newsWindowDays} onChange={(e) => set('newsWindowDays', Number(e.target.value))} />
           </label>
-          <p className="muted small">A linked content item's research notes are always used as a source too.</p>
+          <p className="muted small">All sources are free and need no account. A linked content item's research notes are always used too. Hacker News is used only to discover links.</p>
         </fieldset>
 
         <fieldset>
@@ -137,14 +210,42 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
         <fieldset>
           <legend>Narration</legend>
           <label className="check">
+            <input type="radio" name="narration" checked={s.narration === 'sherpa'} onChange={() => set('narration', 'sherpa')} />
+            Kokoro (local neural voice, Apache-2.0; recommended)
+          </label>
+          <label className="check">
             <input type="radio" name="narration" checked={s.narration === 'windows-sapi'} onChange={() => set('narration', 'windows-sapi')} />
             Windows speech (built in, exact word timing)
           </label>
           <label className="check">
             <input type="radio" name="narration" checked={s.narration === 'piper'} onChange={() => set('narration', 'piper')} />
-            Piper (local neural voice, more natural)
+            Piper (local voice; fallback option)
           </label>
-          {s.narration === 'windows-sapi' ? (
+          {s.narration === 'sherpa' ? (
+            <>
+              <label className="field">
+                <span>Kokoro voice</span>
+                <select value={s.sherpaVoice} onChange={(e) => set('sherpaVoice', e.target.value as KokoroVoiceId)}>
+                  {KOKORO_VOICES.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {status?.find((x) => x.id === 'sherpa')?.available === false && (
+                <div className="install-row">
+                  <button className="secondary" disabled={installing} onClick={installKokoroNow}>
+                    {installing ? 'Installing…' : 'Install Kokoro (~375 MB)'}
+                  </button>
+                </div>
+              )}
+              <label className="field">
+                <span>Pause between sentences ({s.sentencePauseSec.toFixed(2)} s)</span>
+                <input type="range" min={0.15} max={0.8} step={0.01} value={s.sentencePauseSec} onChange={(e) => set('sentencePauseSec', Number(e.target.value))} />
+              </label>
+            </>
+          ) : s.narration === 'windows-sapi' ? (
             <label className="field">
               <span>Windows voice</span>
               <select value={s.voice} onChange={(e) => set('voice', e.target.value)}>
@@ -188,6 +289,31 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
             <span>Speech rate ({s.speechRate})</span>
             <input type="range" min={-5} max={5} step={1} value={s.speechRate} onChange={(e) => set('speechRate', Number(e.target.value))} />
           </label>
+          <label className="field">
+            <span>Pronunciations (one per line: TERM = how to say it)</span>
+            <textarea
+              rows={3}
+              value={pronText}
+              placeholder={'Omnicore = omni core\nKokoro = koh-koh-roh'}
+              onChange={(e) => {
+                setPronText(e.target.value);
+                set('pronunciations', parsePronunciations(e.target.value));
+              }}
+            />
+          </label>
+          <div className="install-row">
+            <button className="secondary" disabled={sampling} onClick={playSample} title="Save providers first so the sample uses these settings">
+              {sampling ? 'Generating…' : 'Generate voice sample'}
+            </button>
+          </div>
+          {sample && (
+            <div className="sample">
+              <audio controls autoPlay src={sample.url} aria-label="Voice sample" />
+              <span className="muted small">
+                {sample.engine} · {sample.voice} · {sample.durationSec.toFixed(1)} s · {sample.wordsPerSec.toFixed(2)} words/s (scripts are sized to this speed)
+              </span>
+            </div>
+          )}
         </fieldset>
 
         <fieldset>
@@ -213,6 +339,11 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
               </div>
             );
           })}
+          <label className="check">
+            <input type="checkbox" checked={s.allowShareAlike} onChange={(e) => set('allowShareAlike', e.target.checked)} />
+            Allow CC BY-SA images (videos using them must be shared alike)
+          </label>
+          <p className="muted small">Only images whose licence verifiably allows commercial use and editing are used (CC0, public domain, CC BY{s.allowShareAlike ? ', CC BY-SA' : ''}). Non-commercial, no-derivatives, logo/trademark and unclear files are rejected; AI images are labelled on screen.</p>
           {s.visuals.includes('comfyui') && (
             <>
               <label className="field">

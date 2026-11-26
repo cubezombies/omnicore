@@ -1,0 +1,47 @@
+{
+ "total_count": 2379,
+ "items": [
+  {
+   "full_name": "deepseek-ai/DeepSpec",
+   "html_url": "https://github.com/deepseek-ai/DeepSpec",
+   "description": "DeepSpec: a full-stack codebase for training and evaluating speculative decoding algorithms",
+   "stargazers_count": 7337,
+   "pushed_at": "2026-07-09T04:37:14Z",
+   "created_at": "2026-06-26T12:36:05Z",
+   "owner": {
+    "login": "deepseek-ai",
+    "type": "Organization"
+   },
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "topics": [],
+   "default_branch": "main"
+  },
+  {
+   "full_name": "z-lab/dflash",
+   "html_url": "https://github.com/z-lab/dflash",
+   "description": "DFlash: Block Diffusion for Flash Speculative Decoding",
+   "stargazers_count": 6262,
+   "pushed_at": "2026-08-18T21:14:10Z",
+   "created_at": "2026-01-04T19:33:39Z",
+   "owner": {
+    "login": "z-lab",
+    "type": "Organization"
+   },
+   "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+   },
+   "topics": [],
+   "default_branch": "main"
+  }
+ ]
+}

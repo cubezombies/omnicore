@@ -6,7 +6,6 @@ import {
   type AssetKind,
   type ProductionAsset,
   type ProviderSettings,
-  type Source,
   type StepName,
   type Storyboard
 } from '../../shared/production';
@@ -15,9 +14,13 @@ import type { SoundLibrary } from '../library';
 import { buildAss, buildCues, type SceneTiming, type WordTiming } from '../media/captions';
 import { CancelledError, probe, runFfmpeg } from '../media/ffmpeg';
 import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, transitionTimes, VIDEO_H, VIDEO_W, type RenderPlan } from '../media/render';
+import { AI_GENERATED_LABEL, verifyVisualAssets } from '../media/assetPolicy';
 import { notesSource } from '../providers/research';
-import { buildBrief } from '../providers/text';
-import type { Providers } from '../providers/types';
+import { ProviderUnavailableError, type NarrationProvider, type Providers } from '../providers/types';
+import { buildEvidenceBrief } from '../research/evidence';
+import { runResearch, type EngineOptions } from '../research/engine';
+import type { RawSource } from '../research/dedupe';
+import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS } from '../../shared/production';
 
 export interface RunnerDeps {
   repo: ProductionRepository;
@@ -31,6 +34,8 @@ export interface RunnerDeps {
   library?: SoundLibrary;
   /** Called after the script step (e.g. to copy the script into the linked content item). */
   onScript?: (productionId: number, storyboard: Storyboard) => void;
+  /** Test seam for research article fetching. */
+  fetchPage?: EngineOptions['fetchPage'];
   /** Test seam: replaces the FFmpeg render call. */
   render?: (args: string[], cwd: string, signal: AbortSignal, onProgress: (f: number) => void, totalSec: number) => Promise<void>;
 }
@@ -221,37 +226,38 @@ export class ProductionRunner {
   private steps: Record<StepName, (c: Ctx) => Promise<void>> = {
     research: async (c) => {
       const p = this.d.repo.get(c.id);
-      const sources: Source[] = [];
       const notes = notesSource(this.d.repo.userNotes(c.id));
-      if (notes) sources.push(notes);
-      const errors: string[] = [];
-      for (const r of c.providers.research) {
-        c.progress(0.2, `Searching ${r.label}…`);
-        try {
-          sources.push(...(await r.research(p.topic, c.signal)));
-          c.cost(r.costPerUnitUsd);
-        } catch (e) {
-          if (e instanceof CancelledError) throw e;
-          errors.push(`${r.label}: ${errMsg(e)}`);
-        }
+      const extra: RawSource[] = notes ? [{ ...notes, kind: 'user', provider: 'notes', contentLevel: 'notes' }] : [];
+      if (!c.providers.research.length && !extra.length) {
+        throw new Error('No research sources: every research provider is turned off and this production has no research notes. Enable providers in Studio → Providers or start the production from a content item with research notes.');
       }
-      if (!sources.length) {
-        if (!c.providers.research.length) {
-          throw new Error('No research sources: Wikipedia research is turned off and this production has no research notes. Enable Wikipedia in Studio → Providers or start the production from a content item with research notes.');
-        }
+      const result = await runResearch({ topic: p.topic, mode: p.mode, windowDays: c.settings.newsWindowDays }, c.providers.research, extra, c.signal, {
+        onProgress: (m) => c.progress(0.3, m),
+        fetchPage: this.d.fetchPage
+      });
+      const failed = result.reports.filter((r) => r.status === 'failed');
+      if (!result.sources.length) {
         throw new Error(
-          `No usable sources found for "${p.topic}". ${errors.length ? errors.join(' ') : 'Try a more specific or differently worded topic.'}`
+          `No usable sources found for "${p.topic}" (${p.mode} mode). ${failed.map((r) => `${r.label}: ${r.error}`).join(' · ')}${result.dropped.length ? ` · ${result.dropped.length} candidates were off-topic, unreadable or too old` : ''}. Try a more specific topic or the other mode.`
         );
       }
-      this.d.repo.update(c.id, { sources });
-      c.progress(1, `${sources.length} source${sources.length === 1 ? '' : 's'}: ${sources.map((s) => s.publisher).join(', ')}`);
+      this.d.repo.update(c.id, { sources: result.sources });
+      const kinds = new Map<string, number>();
+      for (const s of result.sources) kinds.set(SOURCE_KIND_LABELS[s.kind ?? 'other'], (kinds.get(SOURCE_KIND_LABELS[s.kind ?? 'other']) ?? 0) + 1);
+      const answered = result.reports.filter((r) => r.status !== 'failed' && r.id !== 'notes').length;
+      c.progress(
+        1,
+        `${result.sources.length} sources (${[...kinds].map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ')}) · ${answered}/${c.providers.research.length} providers answered${failed.length ? ` · unavailable: ${failed.map((f) => `${f.label} (${f.error})`).join('; ')}` : ''}`
+      );
     },
 
     brief: async (c) => {
       const p = this.d.repo.get(c.id);
-      const brief = buildBrief(p.topic, p.sources, this.d.channel(p.channelId).niche);
+      const brief = buildEvidenceBrief(p.topic, p.sources, this.d.channel(p.channelId).niche, p.mode);
       this.d.repo.update(c.id, { brief });
-      c.progress(1, `${brief.keyFacts.length} sourced facts · ~${brief.targetSeconds}s`);
+      const kinds = new Map<string, number>();
+      for (const cl of brief.claims ?? []) kinds.set(CLAIM_KIND_LABELS[cl.kind], (kinds.get(CLAIM_KIND_LABELS[cl.kind]) ?? 0) + 1);
+      c.progress(1, `${brief.claims?.length ?? 0} evidence claims (${[...kinds].map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ')}) · ~${brief.targetSeconds}s`);
     },
 
     script: async (c) => {
@@ -281,7 +287,8 @@ export class ProductionRunner {
     narration: async (c) => {
       const p = this.d.repo.get(c.id);
       if (!p.storyboard) throw new Error('No storyboard. Re-run from Script.');
-      const n = c.providers.narration;
+      let n: NarrationProvider = c.providers.narration;
+      let fallbackNote = '';
       fs.mkdirSync(path.join(c.dir, 'audio'), { recursive: true });
       const existing = this.d.repo.assets(c.id, 'narration');
       const scenes = p.storyboard.scenes;
@@ -290,7 +297,17 @@ export class ProductionRunner {
         if (have && fs.existsSync(path.join(c.dir, have.path))) continue;
         c.progress(sc.index / scenes.length, `Voicing scene ${sc.index + 1} of ${scenes.length}`);
         const rel = `audio/scene-${pad2(sc.index)}.wav`;
-        const r = await n.synthesize(sc.narration, path.join(c.dir, rel), c.signal);
+        let r;
+        try {
+          r = await n.synthesize(sc.narration, path.join(c.dir, rel), c.signal);
+        } catch (e) {
+          // Never mix voices in one video: only fall back before any clip exists.
+          const fb = c.providers.fallbackNarration;
+          if (!(e instanceof ProviderUnavailableError) || !fb || this.d.repo.assets(c.id, 'narration').length) throw e;
+          fallbackNote = ` · ${n.label} unavailable (${errMsg(e)}), used ${fb.label}`;
+          n = fb;
+          r = await n.synthesize(sc.narration, path.join(c.dir, rel), c.signal);
+        }
         c.cost(sc.narration.length * n.costPerUnitUsd);
         this.d.repo.addAsset(c.id, {
           kind: 'narration',
@@ -302,7 +319,7 @@ export class ProductionRunner {
         });
       }
       const total = this.d.repo.assets(c.id, 'narration').reduce((s, a) => s + Number(a.meta.durationSec), 0);
-      c.progress(1, `${scenes.length} clips · ${total.toFixed(1)}s · ${n.label}`);
+      c.progress(1, `${scenes.length} clips · ${total.toFixed(1)}s · ${n.label}${total > 62 ? ' · over 60 s: shorten the script rather than speeding up the voice' : ''}${fallbackNote}`);
     },
 
     visuals: async (c) => {
@@ -366,7 +383,10 @@ export class ProductionRunner {
       const cues = buildCues(timeline);
       if (!cues.length) throw new Error('Narration has no word timings, so captions cannot be synchronised. Re-run Narration.');
       this.removeAssets(c.id, 'captions');
-      fs.writeFileSync(path.join(c.dir, 'captions.ass'), buildAss(cues), 'utf8');
+      // AI illustrations are always labelled on screen so they are never mistaken for photos or screenshots.
+      const aiScenes = new Set(this.d.repo.assets(c.id, 'image').filter((a) => a.meta.aiGenerated).map((a) => a.sceneIndex));
+      const labels = timeline.filter((_, i) => aiScenes.has(i)).map((t) => ({ start: t.offset, end: t.offset + t.duration, text: AI_GENERATED_LABEL }));
+      fs.writeFileSync(path.join(c.dir, 'captions.ass'), buildAss(cues, labels), 'utf8');
       this.d.repo.addAsset(c.id, { kind: 'captions', sceneIndex: null, path: 'captions.ass', provider: 'omnicore', meta: { cues: cues.length } });
       c.progress(1, `${cues.length} caption cues`);
     },
@@ -376,6 +396,8 @@ export class ProductionRunner {
       if (!p.storyboard || !p.brief) throw new Error('No storyboard. Re-run from Script.');
       const ffmpeg = this.d.ffmpeg(c.settings);
       const images = this.d.repo.assets(c.id, 'image');
+      const licenceProblems = verifyVisualAssets(images, { allowShareAlike: c.settings.allowShareAlike });
+      if (licenceProblems.length) throw new Error(`Visual licence check failed, so this video cannot be rendered: ${licenceProblems.join(' ')}`);
       const timeline = sceneTimeline(p.storyboard, this.d.repo.assets(c.id, 'narration'));
       const plan: RenderPlan = {
         scenes: timeline.map((t, i) => {
@@ -439,11 +461,23 @@ export class ProductionRunner {
   credits(id: number): string {
     const p = this.d.repo.get(id);
     const lines = [p.storyboard?.title ?? p.topic, '', 'Sources:'];
-    for (const s of p.sources) lines.push(`- ${s.title} (${s.publisher})${s.url ? ` ${s.url}` : ''}`);
+    for (const s of p.sources) {
+      const meta = [s.publisher, s.kind ? SOURCE_KIND_LABELS[s.kind] : '', s.authors?.length ? s.authors.slice(0, 3).join(', ') : '', s.publishedAt ? s.publishedAt.slice(0, 10) : '']
+        .filter(Boolean)
+        .join(' · ');
+      lines.push(`- [${s.id}] ${s.title} (${meta})${s.url ? ` ${s.url}` : ''}${s.derivedFrom ? ` [repeats ${s.derivedFrom}]` : ''}`);
+    }
+    if (p.brief?.claims?.length) {
+      lines.push('', 'Claims used:');
+      for (const cl of p.brief.claims) lines.push(`- [${cl.id}] ${CLAIM_KIND_LABELS[cl.kind]}${cl.kind === 'confirmed' ? '' : ` (${cl.attribution})`} · sources ${cl.sourceIds.join(', ')} · ${cl.independentSources} independent`);
+    }
     const imgs = p.assets.filter((a) => a.kind === 'image');
     if (imgs.length) {
       lines.push('', 'Visuals:');
-      for (const a of imgs) lines.push(`- Scene ${(a.sceneIndex ?? 0) + 1}: ${a.attribution}${a.sourceUrl ? ` ${a.sourceUrl}` : ''}`);
+      for (const a of imgs) {
+        const lic = a.meta.licenseRecord as { license?: string; licenseUrl?: string } | undefined;
+        lines.push(`- Scene ${(a.sceneIndex ?? 0) + 1}: ${a.attribution}${a.sourceUrl ? ` ${a.sourceUrl}` : ''}${lic?.licenseUrl ? ` (licence: ${lic.licenseUrl})` : ''}`);
+      }
     }
     const sounds = p.assets.filter((a) => a.kind === 'music' || a.kind === 'sfx');
     if (sounds.length) {

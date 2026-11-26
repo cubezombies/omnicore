@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import {
+  CLAIM_KIND_LABELS,
+  SOURCE_KIND_LABELS,
   PRODUCTION_STEPS,
   STEP_LABELS,
   mediaUrl,
@@ -163,6 +165,7 @@ export function ProductionDetail({ production: p, onDeleted }: { production: Pro
                   <div>
                     <span className="muted small">
                       Scene {s.index + 1} · {s.role}
+                      {s.claimIds?.length ? ` · states ${s.claimIds.join(', ')}` : ''}
                       {s.sourceIds.length ? ` · cites ${s.sourceIds.join(', ')}` : ''}
                     </span>
                     <p className="scene-text">{s.narration}</p>
@@ -172,6 +175,23 @@ export function ProductionDetail({ production: p, onDeleted }: { production: Pro
               );
             })}
           </ol>
+        </section>
+      )}
+
+      {p.brief?.claims && p.brief.claims.length > 0 && (
+        <section>
+          <h3>Evidence claims</h3>
+          <ul className="claims">
+            {p.brief.claims.map((c) => (
+              <li key={c.id}>
+                <strong>{c.id}</strong> <span className={`badge claim-${c.kind}`}>{CLAIM_KIND_LABELS[c.kind]}</span>{' '}
+                <span className="muted small">
+                  {c.kind === 'confirmed' ? '' : `${c.attribution} · `}sources {c.sourceIds.join(', ')} · {c.independentSources} independent
+                </span>
+                <div className="small">{c.text}</div>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 
@@ -189,7 +209,12 @@ export function ProductionDetail({ production: p, onDeleted }: { production: Pro
                 ) : (
                   s.title
                 )}{' '}
-                <span className="muted small">({s.publisher})</span>
+                <span className="muted small">
+                  ({[s.publisher, s.kind ? SOURCE_KIND_LABELS[s.kind] : '', s.authors?.slice(0, 2).join(', '), s.publishedAt?.slice(0, 10), s.contentLevel === 'abstract' ? 'abstract only' : s.contentLevel === 'summary' ? 'summary only' : '']
+                    .filter(Boolean)
+                    .join(' · ')}
+                  {s.derivedFrom ? ` · repeats ${s.derivedFrom}` : ''})
+                </span>
               </li>
             ))}
           </ul>

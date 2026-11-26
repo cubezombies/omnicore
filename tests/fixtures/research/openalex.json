@@ -1,0 +1,1100 @@
+{
+ "meta": {
+  "notice": "No API key, so this request shares one free daily budget ($0.10) with everyone on your network's IP address. Get a free key with its own $1/day at https://openalex.org/settings/api and add api_key=YOUR_KEY to your requests. An AI agent can get one for its user in one call: POST https://api.openalex.org/api-keys with {\"email\": \"<your user's email>\"}; we email them a link, and the key works once they click it. Docs for agents: https://help.openalex.org/llms.txt",
+  "count": 31366,
+  "db_response_time_ms": 118,
+  "page": 1,
+  "per_page": 2,
+  "groups_count": null,
+  "x_query": {
+   "oql": "get works with (speculative decoding) in the title, abstract, or full text where it has an abstract",
+   "x_new_oql": "get works with (speculative decoding) in the title, abstract, or full text where it has an abstract",
+   "oqo": {
+    "get_rows": "works",
+    "filter_rows": [
+     {
+      "column_id": "fulltext.search",
+      "value": "speculative decoding",
+      "operator": "has"
+     },
+     {
+      "column_id": "has_abstract",
+      "value": true
+     }
+    ]
+   },
+   "url": "/works?filter=fulltext.search:speculative decoding,has_abstract:true&per_page=2",
+   "order": "best matches first",
+   "order_default": true
+  },
+  "cost_usd": 0.001
+ },
+ "results": [
+  {
+   "id": "https://openalex.org/W4387596095",
+   "doi": "https://doi.org/10.48550/arxiv.2310.07177",
+   "title": "Online Speculative Decoding",
+   "display_name": "Online Speculative Decoding",
+   "publication_date": "2024-07-08",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5100666862",
+      "display_name": "Xiaoxuan Liu",
+      "type": null,
+      "orcid": "https://orcid.org/0000-0002-1426-5056",
+      "observed_orcids": [
+       "https://orcid.org/0000-0002-1426-5056"
+      ]
+     },
+     "acted_on_behalf_of": [],
+     "institutions": [],
+     "countries": [],
+     "is_corresponding": false,
+     "contributor_roles": [],
+     "raw_author_name": "Liu, Xiaoxuan",
+     "raw_affiliation_strings": [],
+     "raw_orcid": null,
+     "affiliations": []
+    },
+    {
+     "author_position": "middle",
+     "author": {
+      "id": "https://openalex.org/A5111055876",
+      "display_name": "Lanxiang Hu",
+      "type": null,
+      "orcid": "https://orcid.org/0000-0003-0641-3677",
+      "observed_orcids": [
+       "https://orcid.org/0000-0003-0641-3677"
+      ]
+     },
+     "acted_on_behalf_of": [],
+     "institutions": [],
+     "countries": [],
+     "is_corresponding": false,
+     "contributor_roles": [],
+     "raw_author_name": "Hu, Lanxiang",
+     "raw_affiliation_strings": [],
+     "raw_orcid": null,
+     "affiliations": []
+    },
+    {
+     "author_position": "middle",
+     "author": {
+      "id": "https://openalex.org/A5002538469",
+      "display_name": "Peter D. Bailis",
+      "type": null,
+      "orcid": "https://orcid.org/0000-0003-1166-7823",
+      "observed_orcids": [
+       "https://orcid.org/0000-0003-1166-7823"
+      ]
+     },
+     "acted_on_behalf_of": [],
+     "institutions": [],
+     "countries": [],
+     "is_corresponding": false,
+     "contributor_roles": [],
+     "raw_author_name": "Bailis, Peter",
+     "raw_affiliation_strings": [],
+     "raw_orcid": null,
+     "affiliations": []
+    }
+   ],
+   "abstract_inverted_index": {
+    "Speculative": [
+     0
+    ],
+    "decoding": [
+     1,
+     65,
+     124
+    ],
+    "is": [
+     2,
+     73,
+     162
+    ],
+    "a": [
+     3,
+     17,
+     51,
+     119,
+     142
+    ],
+    "pivotal": [
+     4
+    ],
+    "technique": [
+     5
+    ],
+    "to": [
+     6,
+     21,
+     34,
+     66,
+     74,
+     87,
+     109,
+     152,
+     156
+    ],
+    "accelerate": [
+     7
+    ],
+    "the": [
+     8,
+     23,
+     35,
+     40,
+     56,
+     77,
+     91,
+     94,
+     98,
+     102,
+     106,
+     113,
+     146
+    ],
+    "inference": [
+     9
+    ],
+    "of": [
+     10,
+     39,
+     97,
+     121
+    ],
+    "large": [
+     11
+    ],
+    "language": [
+     12
+    ],
+    "models": [
+     13
+    ],
+    "(LLMs)": [
+     14
+    ],
+    "by": [
+     15,
+     150
+    ],
+    "employing": [
+     16
+    ],
+    "smaller": [
+     18
+    ],
+    "draft": [
+     19,
+     41,
+     57,
+     79,
+     99,
+     107
+    ],
+    "model": [
+     20,
+     100,
+     108
+    ],
+    "predict": [
+     22,
+     112
+    ],
+    "target": [
+     24,
+     59,
+     114
+    ],
+    "model's": [
+     25,
+     115
+    ],
+    "outputs.": [
+     26,
+     116
+    ],
+    "However,": [
+     27
+    ],
+    "its": [
+     28
+    ],
+    "efficacy": [
+     29
+    ],
+    "can": [
+     30
+    ],
+    "be": [
+     31
+    ],
+    "limited": [
+     32
+    ],
+    "due": [
+     33
+    ],
+    "low": [
+     36
+    ],
+    "predictive": [
+     37
+    ],
+    "accuracy": [
+     38
+    ],
+    "model,": [
+     42
+    ],
+    "particularly": [
+     43
+    ],
+    "when": [
+     44
+    ],
+    "faced": [
+     45
+    ],
+    "with": [
+     46
+    ],
+    "diverse": [
+     47
+    ],
+    "text": [
+     48
+    ],
+    "inputs": [
+     49
+    ],
+    "and": [
+     50,
+     58,
+     101,
+     129,
+     135
+    ],
+    "significant": [
+     52
+    ],
+    "capability": [
+     53
+    ],
+    "gap": [
+     54
+    ],
+    "between": [
+     55,
+     93
+    ],
+    "models.": [
+     60
+    ],
+    "We": [
+     61,
+     117
+    ],
+    "introduce": [
+     62
+    ],
+    "online": [
+     63,
+     122
+    ],
+    "speculative": [
+     64,
+     123
+    ],
+    "address": [
+     67
+    ],
+    "this": [
+     68
+    ],
+    "challenge.": [
+     69
+    ],
+    "The": [
+     70,
+     139
+    ],
+    "main": [
+     71
+    ],
+    "idea": [
+     72
+    ],
+    "continuously": [
+     75
+    ],
+    "update": [
+     76
+    ],
+    "(multiple)": [
+     78
+    ],
+    "model(s)": [
+     80
+    ],
+    "on": [
+     81,
+     126
+    ],
+    "observed": [
+     82
+    ],
+    "user": [
+     83
+    ],
+    "query": [
+     84,
+     88,
+     103,
+     137
+    ],
+    "data.": [
+     85,
+     138
+    ],
+    "Adapting": [
+     86
+    ],
+    "distribution": [
+     89,
+     96
+    ],
+    "mitigates": [
+     90
+    ],
+    "shifts": [
+     92
+    ],
+    "training": [
+     95
+    ],
+    "distribution,": [
+     104
+    ],
+    "enabling": [
+     105
+    ],
+    "more": [
+     110
+    ],
+    "accurately": [
+     111
+    ],
+    "develop": [
+     118
+    ],
+    "prototype": [
+     120
+    ],
+    "based": [
+     125
+    ],
+    "knowledge": [
+     127
+    ],
+    "distillation": [
+     128
+    ],
+    "evaluate": [
+     130
+    ],
+    "it": [
+     131
+    ],
+    "using": [
+     132
+    ],
+    "both": [
+     133
+    ],
+    "synthetic": [
+     134
+    ],
+    "real": [
+     136
+    ],
+    "results": [
+     140
+    ],
+    "show": [
+     141
+    ],
+    "substantial": [
+     143
+    ],
+    "increase": [
+     144
+    ],
+    "in": [
+     145
+    ],
+    "token": [
+     147
+    ],
+    "acceptance": [
+     148
+    ],
+    "rate": [
+     149
+    ],
+    "0.1": [
+     151
+    ],
+    "0.65,": [
+     153
+    ],
+    "bringing": [
+     154
+    ],
+    "1.42x": [
+     155
+    ],
+    "2.17x": [
+     157
+    ],
+    "latency": [
+     158
+    ],
+    "reduction.": [
+     159
+    ],
+    "Our": [
+     160
+    ],
+    "code": [
+     161
+    ],
+    "available": [
+     163
+    ],
+    "at": [
+     164
+    ],
+    "https://github.com/LiuXiaoxuanPKU/OSD.": [
+     165
+    ]
+   },
+   "primary_location": {
+    "id": "pmh:oai:proceedings.mlr.press:v235/liu24y",
+    "doi": null,
+    "is_oa": true,
+    "landing_page_url": "https://proceedings.mlr.press/v235/liu24y.html",
+    "pdf_url": "https://raw.githubusercontent.com/mlresearch/v235/main/assets/liu24y/liu24y.pdf",
+    "source": {
+     "id": "https://openalex.org/S4306419644",
+     "display_name": "International Conference on Machine Learning",
+     "issn_l": null,
+     "issn": null,
+     "is_oa": false,
+     "is_in_doaj": false,
+     "is_core": false,
+     "listed_in": [],
+     "host_organization": null,
+     "host_organization_name": null,
+     "host_organization_lineage": [],
+     "host_organization_lineage_names": [],
+     "type": "conference"
+    },
+    "license": null,
+    "license_id": null,
+    "version": "publishedVersion",
+    "is_accepted": true,
+    "is_published": true,
+    "raw_source_name": "Proceedings of the 41st International Conference on Machine Learning",
+    "raw_type": "info:eu-repo/semantics/conferenceObject"
+   },
+   "type": "conference-paper",
+   "cited_by_count": 153,
+   "open_access": {
+    "is_oa": true,
+    "oa_status": "bronze",
+    "oa_url": "https://raw.githubusercontent.com/mlresearch/v235/main/assets/liu24y/liu24y.pdf",
+    "any_repository_has_fulltext": true
+   }
+  },
+  {
+   "id": "https://openalex.org/W4411120473",
+   "doi": "https://doi.org/10.18653/v1/2025.naacl-long.328",
+   "title": "Decoding Speculative Decoding",
+   "display_name": "Decoding Speculative Decoding",
+   "publication_date": "2025-01-01",
+   "authorships": [
+    {
+     "author_position": "first",
+     "author": {
+      "id": "https://openalex.org/A5031048481",
+      "display_name": "Minghao Yan",
+      "type": null,
+      "orcid": "https://orcid.org/0000-0002-3572-4813",
+      "observed_orcids": [
+       "https://orcid.org/0000-0002-3572-4813"
+      ]
+     },
+     "acted_on_behalf_of": [],
+     "institutions": [
+      {
+       "id": "https://openalex.org/I135310074",
+       "display_name": "University of Wisconsin\u2013Madison",
+       "ror": "https://ror.org/01y2jtd41",
+       "country_code": "US",
+       "type": "education",
+       "lineage": [
+        "https://openalex.org/I135310074"
+       ]
+      }
+     ],
+     "countries": [
+      "US"
+     ],
+     "is_corresponding": false,
+     "contributor_roles": [],
+     "raw_author_name": "Minghao Yan",
+     "raw_affiliation_strings": [
+      "Department of Computer Sciences University of Wisconsin-Madison"
+     ],
+     "raw_orcid": null,
+     "affiliations": [
+      {
+       "raw_affiliation_string": "Department of Computer Sciences University of Wisconsin-Madison",
+       "institution_ids": [
+        "https://openalex.org/I135310074"
+       ]
+      }
+     ]
+    },
+    {
+     "author_position": "middle",
+     "author": {
+      "id": null,
+      "display_name": "Saurabh Agarwal",
+      "type": null,
+      "orcid": null,
+      "observed_orcids": []
+     },
+     "acted_on_behalf_of": [],
+     "institutions": [
+      {
+       "id": "https://openalex.org/I135310074",
+       "display_name": "University of Wisconsin\u2013Madison",
+       "ror": "https://ror.org/01y2jtd41",
+       "country_code": "US",
+       "type": "education",
+       "lineage": [
+        "https://openalex.org/I135310074"
+       ]
+      }
+     ],
+     "countries": [
+      "US"
+     ],
+     "is_corresponding": false,
+     "contributor_roles": [],
+     "raw_author_name": "Saurabh Agarwal",
+     "raw_affiliation_strings": [
+      "Department of Computer Sciences University of Wisconsin-Madison"
+     ],
+     "raw_orcid": null,
+     "affiliations": [
+      {
+       "raw_affiliation_string": "Department of Computer Sciences University of Wisconsin-Madison",
+       "institution_ids": [
+        "https://openalex.org/I135310074"
+       ]
+      }
+     ]
+    },
+    {
+     "author_position": "last",
+     "author": {
+      "id": "https://openalex.org/A5082710354",
+      "display_name": "Shivaram Venkataraman",
+      "type": null,
+      "orcid": "https://orcid.org/0000-0001-9575-7935",
+      "observed_orcids": [
+       "https://orcid.org/0000-0001-9575-7935"
+      ]
+     },
+     "acted_on_behalf_of": [],
+     "institutions": [
+      {
+       "id": "https://openalex.org/I135310074",
+       "display_name": "University of Wisconsin\u2013Madison",
+       "ror": "https://ror.org/01y2jtd41",
+       "country_code": "US",
+       "type": "education",
+       "lineage": [
+        "https://openalex.org/I135310074"
+       ]
+      }
+     ],
+     "countries": [
+      "US"
+     ],
+     "is_corresponding": false,
+     "contributor_roles": [],
+     "raw_author_name": "Shivaram Venkataraman",
+     "raw_affiliation_strings": [
+      "Department of Computer Sciences University of Wisconsin-Madison"
+     ],
+     "raw_orcid": null,
+     "affiliations": [
+      {
+       "raw_affiliation_string": "Department of Computer Sciences University of Wisconsin-Madison",
+       "institution_ids": [
+        "https://openalex.org/I135310074"
+       ]
+      }
+     ]
+    }
+   ],
+   "abstract_inverted_index": {
+    "Speculative": [
+     0
+    ],
+    "Decoding": [
+     1
+    ],
+    "is": [
+     2
+    ],
+    "a": [
+     3,
+     25,
+     64,
+     133
+    ],
+    "widely": [
+     4
+    ],
+    "used": [
+     5
+    ],
+    "technique": [
+     6
+    ],
+    "to": [
+     7,
+     29,
+     39,
+     167
+    ],
+    "speed": [
+     8
+    ],
+    "up": [
+     9
+    ],
+    "inference": [
+     10
+    ],
+    "for": [
+     11,
+     137,
+     145
+    ],
+    "Large": [
+     12
+    ],
+    "Language": [
+     13
+    ],
+    "Models": [
+     14
+    ],
+    "(LLMs)": [
+     15
+    ],
+    "without": [
+     16
+    ],
+    "sacrificing": [
+     17
+    ],
+    "quality.": [
+     18
+    ],
+    "When": [
+     19
+    ],
+    "performing": [
+     20
+    ],
+    "inference,": [
+     21
+    ],
+    "speculative": [
+     22,
+     31,
+     48,
+     76,
+     89,
+     98,
+     125,
+     146
+    ],
+    "decoding": [
+     23,
+     49,
+     77,
+     99
+    ],
+    "uses": [
+     24,
+     35
+    ],
+    "smaller": [
+     26
+    ],
+    "draft": [
+     27,
+     42,
+     57,
+     107,
+     111,
+     138,
+     143,
+     151,
+     160
+    ],
+    "model": [
+     28,
+     152
+    ],
+    "generate": [
+     30
+    ],
+    "tokens": [
+     32
+    ],
+    "and": [
+     33,
+     73,
+     78,
+     109,
+     140,
+     162,
+     172
+    ],
+    "then": [
+     34
+    ],
+    "the": [
+     36,
+     53,
+     56,
+     80,
+     84,
+     95,
+     103,
+     106,
+     110
+    ],
+    "target": [
+     37
+    ],
+    "LLM": [
+     38
+    ],
+    "verify": [
+     40
+    ],
+    "those": [
+     41
+    ],
+    "tokens.": [
+     43
+    ],
+    "The": [
+     44
+    ],
+    "speedup": [
+     45
+    ],
+    "provided": [
+     46,
+     87
+    ],
+    "by": [
+     47,
+     88
+    ],
+    "heavily": [
+     50,
+     101
+    ],
+    "depends": [
+     51,
+     100
+    ],
+    "on": [
+     52,
+     102,
+     128
+    ],
+    "choice": [
+     54
+    ],
+    "of": [
+     55,
+     97,
+     105
+    ],
+    "model.": [
+     58
+    ],
+    "In": [
+     59
+    ],
+    "this": [
+     60
+    ],
+    "work,": [
+     61
+    ],
+    "we": [
+     62,
+     131
+    ],
+    "perform": [
+     63
+    ],
+    "detailed": [
+     65
+    ],
+    "study": [
+     66
+    ],
+    "comprising": [
+     67
+    ],
+    "over": [
+     68
+    ],
+    "350": [
+     69
+    ],
+    "experiments": [
+     70,
+     92
+    ],
+    "with": [
+     71,
+     121
+    ],
+    "LLaMA-65B": [
+     72
+    ],
+    "OPT-66B": [
+     74
+    ],
+    "using": [
+     75
+    ],
+    "delineate": [
+     79
+    ],
+    "factors": [
+     81
+    ],
+    "that": [
+     82,
+     94
+    ],
+    "affect": [
+     83
+    ],
+    "performance": [
+     85,
+     96,
+     123
+    ],
+    "gain": [
+     86
+    ],
+    "decoding.": [
+     90,
+     126,
+     147
+    ],
+    "Our": [
+     91,
+     148
+    ],
+    "indicate": [
+     93
+    ],
+    "latency": [
+     104
+    ],
+    "model,": [
+     108
+    ],
+    "model\u2019s": [
+     112
+    ],
+    "capability": [
+     113
+    ],
+    "in": [
+     114,
+     124
+    ],
+    "language": [
+     115
+    ],
+    "modeling": [
+     116
+    ],
+    "does": [
+     117
+    ],
+    "not": [
+     118
+    ],
+    "correlate": [
+     119
+    ],
+    "strongly": [
+     120
+    ],
+    "its": [
+     122
+    ],
+    "Based": [
+     127
+    ],
+    "these": [
+     129
+    ],
+    "insights": [
+     130
+    ],
+    "explore": [
+     132
+    ],
+    "new": [
+     134
+    ],
+    "design": [
+     135,
+     141
+    ],
+    "space": [
+     136
+    ],
+    "models": [
+     139,
+     144,
+     161,
+     170
+    ],
+    "hardware-efficient": [
+     142
+    ],
+    "newly": [
+     149
+    ],
+    "designed": [
+     150
+    ],
+    "can": [
+     153
+    ],
+    "provide": [
+     154
+    ],
+    "111%": [
+     155
+    ],
+    "higher": [
+     156
+    ],
+    "throughput": [
+     157
+    ],
+    "than": [
+     158
+    ],
+    "existing": [
+     159
+    ],
+    "our": [
+     163
+    ],
+    "approach": [
+     164
+    ],
+    "generalizes": [
+     165
+    ],
+    "further": [
+     166
+    ],
+    "all": [
+     168
+    ],
+    "LLaMA": [
+     169
+    ],
+    "(1/2/3.1)": [
+     171
+    ],
+    "supervised": [
+     173
+    ],
+    "fine-tuned": [
+     174
+    ],
+    "models.": [
+     175
+    ]
+   },
+   "primary_location": {
+    "id": "doi:10.18653/v1/2025.naacl-long.328",
+    "doi": "https://doi.org/10.18653/v1/2025.naacl-long.328",
+    "is_oa": true,
+    "landing_page_url": "https://doi.org/10.18653/v1/2025.naacl-long.328",
+    "pdf_url": "https://aclanthology.org/2025.naacl-long.328.pdf",
+    "source": {
+     "id": "https://openalex.org/S4363608774",
+     "display_name": "Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (NAACL-HLT)",
+     "issn_l": null,
+     "issn": null,
+     "is_oa": false,
+     "is_in_doaj": false,
+     "is_core": false,
+     "listed_in": [],
+     "host_organization": null,
+     "host_organization_name": null,
+     "host_organization_lineage": [],
+     "host_organization_lineage_names": [],
+     "type": "conference"
+    },
+    "license": "cc-by",
+    "license_id": "https://openalex.org/licenses/cc-by",
+    "version": "publishedVersion",
+    "is_accepted": true,
+    "is_published": true,
+    "raw_source_name": "Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers)",
+    "raw_type": "proceedings-article"
+   },
+   "type": "conference-paper",
+   "cited_by_count": 81,
+   "open_access": {
+    "is_oa": true,
+    "oa_status": "hybrid",
+    "oa_url": "https://aclanthology.org/2025.naacl-long.328.pdf",
+    "any_repository_has_fulltext": true
+   }
+  }
+ ]
+}

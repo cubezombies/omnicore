@@ -8,7 +8,8 @@ import { ProductionRepository } from '../src/main/db/productions';
 import { CancelledError, probe, resolveFfmpeg } from '../src/main/media/ffmpeg';
 import { writeWav } from '../src/main/media/wav';
 import { ProductionRunner } from '../src/main/pipeline/runner';
-import type { NarrationProvider, Providers, ResearchProvider, VisualProvider, Writer } from '../src/main/providers/types';
+import type { NarrationProvider, Providers, VisualProvider, Writer } from '../src/main/providers/types';
+import type { ResearchAdapter } from '../src/main/research/adapters';
 import { TitleCardVisuals } from '../src/main/providers/visuals';
 import { ExtractiveWriter, OpenAICompatibleWriter } from '../src/main/providers/writers';
 import { DEFAULT_SETTINGS, type ProviderSettings } from '../src/shared/production';
@@ -17,14 +18,13 @@ import { SOURCES } from './fixtures';
 const ffmpeg = resolveFfmpeg('');
 const status = { available: true, detail: '', costPerUnitUsd: 0 };
 
-function fakeResearch(calls: { n: number }, fail = false): ResearchProvider {
+function fakeResearch(calls: { n: number }, fail = false): ResearchAdapter {
   return {
-    id: 'fake-research', label: 'Fake research', costPerUnitUsd: 0,
-    check: async () => ({ ...status, id: 'fake-research', kind: 'research', label: 'Fake research' }),
-    research: async () => {
+    id: 'wikipedia', label: 'Fake research', category: 'background', healthUrl: 'http://127.0.0.1:9/',
+    search: async () => {
       calls.n++;
       if (fail) throw new Error('offline');
-      return SOURCES;
+      return SOURCES.map(({ id: _id, ...s }) => ({ ...s, kind: 'background' as const, provider: 'wikipedia', contentLevel: 'full' as const }));
     }
   };
 }
@@ -130,7 +130,7 @@ describe('production pipeline', () => {
     await runner.idle();
     const r = repo.get(p.id);
     expect(r.status).toBe('failed');
-    expect(r.error).toMatch(/^Research: No research sources: Wikipedia research is turned off/);
+    expect(r.error).toMatch(/^Research: No research sources: every research provider is turned off/);
     expect(r.steps.find((s) => s.step === 'research')!.status).toBe('failed');
     expect(r.steps.find((s) => s.step === 'brief')!.status).toBe('pending');
   });

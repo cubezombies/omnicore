@@ -144,7 +144,7 @@ describe('render with music and transition effects', () => {
       settings: () => settings,
       library: lib,
       providers: () => ({
-        research: [{ id: 'r', label: 'r', costPerUnitUsd: 0, check: async () => ({ id: 'r', kind: 'research', label: 'r', available: true, detail: '', costPerUnitUsd: 0 }), research: async () => SOURCES }],
+        research: [{ id: 'wikipedia', label: 'r', category: 'background', healthUrl: 'http://127.0.0.1:9/', search: async () => SOURCES.map(({ id: _id, ...x }) => ({ ...x, kind: 'background' as const, contentLevel: 'full' as const })) }],
         writer: new ExtractiveWriter(),
         narration: {
           id: 'n', label: 'n', costPerUnitUsd: 0,

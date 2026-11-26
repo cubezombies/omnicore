@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?><feed
+	xmlns="http://www.w3.org/2005/Atom"
+	xmlns:thr="http://purl.org/syndication/thread/1.0"
+	xml:lang="en-US"
+	>
+	<title type="text">AI | The Verge</title>
+	<subtitle type="text">The Verge is about technology and how it makes us feel. Founded in 2011, we offer our audience everything from breaking news to reviews to award-winning features and investigations, on our site, in video, and in podcasts.</subtitle>
+
+	<updated>2026-11-26T12:29:18+00:00</updated>
+
+	<link rel="alternate" type="text/html" href="https://www.theverge.com/ai-artificial-intelligence" />
+	<id>https://www.theverge.com/rss/ai-artificial-intelligence/index.xml</id>
+	<link rel="self" type="application/atom+xml" href="https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" />
+
+	<icon>https://platform.theverge.com/wp-content/uploads/sites/2/2025/01/verge-rss-large_80b47e.png?w=150&amp;h=150&amp;crop=1</icon>
+		<entry>
+			
+			<author>
+				<name>Terrence O’Brien</name>
+			</author>
+			
+			<title type="html"><![CDATA[42 state AGs are trying to stop Character.AI from selling users’ chats]]></title>
+			<link rel="alternate" type="text/html" href="https://www.theverge.com/policy/1042620/character-ai-sale-state-ags-block-selling-users-chats" />
+			<id>https://www.theverge.com/?p=1042620</id>
+			<updated>2026-11-26T04:54:40-05:00</updated>
+			<published>2026-11-26T04:54:40-05:00</published>
+			<category scheme="https://www.theverge.com" term="AI" /><category scheme="https://www.theverge.com" term="Law" /><category scheme="https://www.theverge.com" term="News" /><category scheme="https://www.theverge.com" term="Policy" />
+							<summary type="html"><![CDATA[A coalition of 42 state attorneys general is trying to prevent Character.AI from selling off user data as it navigates Chapter 11 bankruptcy proceedings. In a deluge of nearly identical press releases, the various AGs accuse the company of planning to auction off "the private chat histories of more than 21 million U.S. accounts - [&#8230;]]]></summary>
+			
+							<content type="html">
+											<![CDATA[
+
+						
+<figure>
+
+<img alt="Vector illustration of the Character.ai logo." data-caption="" data-portal-copyright="Image: Cath Virginia / The Verge" data-has-syndication-rights="1" src="https://platform.theverge.com/wp-content/uploads/sites/2/chorus/uploads/chorus_asset/file/25557391/STK278_character_ai_B.jpg?quality=90&#038;strip=all&#038;crop=0,0,100,100" />
+	<figcaption>
+		</figcaption>
+</figure>
+<p class="wp-block-paragraph">A coalition of <a href="https://techcrunch.com/2026/11/25/state-ags-fight-character-ais-plan-to-auction-off-users-private-chats/">42 state attorneys general </a>is <a href="https://oag.ca.gov/system/files/attachments/press-docs/characterai.pdf">trying to prevent</a> Character.AI from <a href="https://www.theverge.com/policy/1011417/new-york-ag-characterai-bankruptcy">selling off user data</a> as it navigates Chapter 11 bankruptcy proceedings. In a <a href="https://oag.maryland.gov/News/pages/Attorney-General-Brown-Challenges-Plan-to-Auction-Off-Character.AI-Users%E2%80%99-Private-Chats%2C-Including-Kids%E2%80%99-Data%2C-to-Highest-B.aspx">deluge</a> of <a href="https://portal.ct.gov/ag/press-releases/2026-press-releases/attorney-general-tong-challenges-plan-to-auction-off-character-ai-private-chats">nearly</a> <a href="https://oag.ca.gov/news/press-releases/attorney-general-bonta-opposes-asset-sale-characterai-amid-child-safety-concerns">identical</a> <a href="https://www.ag.state.mn.us/Office/Communications/2026/11/23_CharacterAI.asp">press</a> releases, the various AGs accuse the company of planning to auction off "the private chat histories of more than 21 million U.S. accounts - more than 2.1 million of them registered to minors - with no safeguards for the people whose conversations are being sold."</p>
+<p class="wp-block-paragraph">In October, Character.AI <a href="https://www.theverge.com/ai-artificial-intelligence/1009802/character-ai-files-for-bankruptcy-disney">filed for bankruptcy </a>following <a href="https://www.theverge.com/report/841610/ai-chatbot-suicide-safety-failure">years</a> of <a href="https://www.theverge.com/ai-artificial-intelligence/1009463/character-ai-chats-encouraging-self-harm-detailed-in-unredacted-kentucky-lawsuit">scandals</a> and <a href="https://www.theverge.com/news/858102/characterai-google-teen-suicide-settlement">legal challenges</a>, including from <a href="https://www.theverge.com/news/789451/its-curtains-for-ai-elsa-spider-man-and-darth-vader">Disney</a>. Disney ended up buying some of the company's assets and <a href="https://www.theverge.com/entertainment/997555/karandeep-anand-disney-character-ai">hiring its CEO</a>, K …</p>
+<p><a href="https://www.theverge.com/policy/1042620/character-ai-sale-state-ags-block-selling-users-chats">Read the full story at The Verge.</a></p>
+						]]>
+									</content>
+			
+					</entry>
+<entry>
+			
+			<author>
+				<name>Charles Pulliam-Moore</name>
+			</author>
+			
+			<title type="html"><![CDATA[Google’s patent for custom AI video feeds paints a bleak picture of entertainment’s future]]></title>
+			<link rel="alternate" type="text/html" href="https://www.theverge.com/entertainment/1042221/google-my-channel-ai-video-patent" />
+			<id>https://www.theverge.com/?p=1042221</id>
+			<updated>2026-11-25T16:51:26-05:00</updated>
+			<published>2026-11-25T16:51:26-05:00</published>
+			<category scheme="https://www.theverge.com" term="AI" /><category scheme="https://www.theverge.com" term="Entertainment" /><category scheme="https://www.theverge.com" term="Film" /><category scheme="https://www.theverge.com" term="Google" /><category scheme="https://www.theverge.com" term="Streaming" /><category scheme="https://www.theverge.com" term="Tech" /><category scheme="https://www.theverge.com" term="TV Shows" />
+							<summary type="html"><![CDATA[Last year, Google filed a patent for a system called My Channel that's designed to create feeds filled with personalized, AI-generated videos and advertisements based on information the company knows about its users. The patent has been rejected, but unfortunately, Google might appeal or resubmit an amended version, and we could see this monstrosity come [&#8230;]]]></summary>
+			
+							<content type="html">
+											<![CDATA[
+
+						
+<figure>
+
+<img alt="A patent illustration depicting a man standing in a room with a large television screen displaying the home page of a streaming service." data-caption="" data-portal-copyright="Image: Google" data-has-syndication-rights="1" src="https://platform.theverge.com/wp-content/uploads/sites/2/2026/11/Screenshot-2026-11-25-at-11.34.07-AM.png?quality=90&#038;strip=all&#038;crop=2.859375,3.7218027238494,93.788122558594,91.658221639303" />
+	<figcaption>
+		</figcaption>
+</figure>
+<p class="wp-block-paragraph">Last year, <a href="https://www.digitaltrends.com/movies/google-filed-a-patent-for-an-ai-channel-that-casts-you-as-the-lead/">Google filed a patent</a> for a system called My Channel that's designed to create feeds filled with personalized, AI-generated videos and advertisements based on information the company knows about its users. The patent has been rejected, but unfortunately, Google might appeal or resubmit an amended version, and we could see this monstrosity come to market.</p>
+<p class="wp-block-paragraph">First <a href="https://patentlyze.com/patent/google-ai-made-tv-channel-built-around-you/">spotted by Patentlyze</a>, the patent - which was filed last May and published last week - describes how My Channel would use a person's demographic data and viewing history to create its own prompts that would then be fed into an LLM to help generate AI videos tailored to that …</p>
+<p><a href="https://www.theverge.com/entertainment/1042221/google-my-channel-ai-video-patent">Read the full story at The Verge.</a></p>
+						]]>
+									</content>
+			
+					</entry>
+</feed>

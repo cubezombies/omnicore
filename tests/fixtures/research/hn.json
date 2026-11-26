@@ -1,0 +1,31 @@
+{
+ "hits": [
+  {
+   "title": "DSpark: Speculative decoding accelerates LLM inference [pdf]",
+   "url": "https://github.com/deepseek-ai/DeepSpec/blob/main/DSpark_paper.pdf",
+   "author": "aurenvale",
+   "created_at": "2026-06-27T09:18:52Z",
+   "points": 797,
+   "num_comments": 361,
+   "objectID": "48696585"
+  },
+  {
+   "title": "Speculative Decoding in vLLM on AMD GPUs",
+   "url": "https://vllm.ai/blog/2026-08-23-speculative-decoding-amd-gpus",
+   "author": "ankitg12",
+   "created_at": "2026-09-07T09:26:41Z",
+   "points": 145,
+   "num_comments": 53,
+   "objectID": "49596054"
+  },
+  {
+   "title": "Speculative Speculative Decoding (SSD)",
+   "url": "https://arxiv.org/abs/2603.03251",
+   "author": "E-Reverance",
+   "created_at": "2026-03-04T03:24:20Z",
+   "points": 61,
+   "num_comments": 9,
+   "objectID": "47242637"
+  }
+ ]
+}

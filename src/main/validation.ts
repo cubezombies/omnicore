@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
 import {
+  KOKORO_VOICES,
+  RESEARCH_PROVIDERS,
   MUSIC_MODES,
   NARRATORS,
   PIPER_VOICES,
@@ -8,6 +10,8 @@ import {
   VISUAL_PROVIDERS,
   WRITERS,
   type AudioKind,
+  type ProductionMode,
+  type Pronunciation,
   type AudioTrackPatch,
   type PiperVoiceId,
   type SoundGeneratorId,
@@ -77,7 +81,10 @@ export function patch(v: unknown): ContentPatch {
 export function newProduction(v: unknown): NewProduction {
   const o = object(v, 'production');
   const topic = text(o.topic, 'title', true)!;
-  return { topic, contentId: o.contentId === undefined || o.contentId === null ? undefined : id(o.contentId, 'contentId') };
+  const mode: ProductionMode | undefined = o.mode === undefined ? undefined : o.mode === 'news' || o.mode === 'explainer' ? o.mode : (() => {
+    throw new ValidationError('Mode must be explainer or news');
+  })();
+  return { topic, contentId: o.contentId === undefined || o.contentId === null ? undefined : id(o.contentId, 'contentId'), ...(mode ? { mode } : {}) };
 }
 
 export function stepName(v: unknown): StepName {
@@ -119,9 +126,16 @@ export function settings(v: unknown): ProviderSettings {
   if (!Array.isArray(o.visuals) || o.visuals.some((x) => !(VISUAL_PROVIDERS as readonly unknown[]).includes(x))) {
     throw new ValidationError('Unknown visual provider');
   }
-  if (typeof o.wikipediaResearch !== 'boolean') throw new ValidationError('wikipediaResearch must be true or false');
+  if (!Array.isArray(o.researchProviders) || o.researchProviders.some((x) => !RESEARCH_PROVIDERS.some((r) => r.id === x))) {
+    throw new ValidationError('Unknown research provider');
+  }
+  if (!KOKORO_VOICES.some((k) => k.id === o.sherpaVoice)) throw new ValidationError('Unknown Kokoro voice');
+  if (typeof o.allowShareAlike !== 'boolean') throw new ValidationError('allowShareAlike must be true or false');
+  const researchProviders = [...new Set(o.researchProviders as ProviderSettings['researchProviders'])];
   return {
-    wikipediaResearch: o.wikipediaResearch,
+    wikipediaResearch: researchProviders.includes('wikipedia'),
+    researchProviders,
+    newsWindowDays: Math.round(num(o.newsWindowDays, 'News window', 1, 365)),
     writer: o.writer as ProviderSettings['writer'],
     llmBaseUrl: httpUrl(o.llmBaseUrl, 'LLM base URL'),
     llmModel: str(o.llmModel, 'LLM model', 200),
@@ -135,6 +149,10 @@ export function settings(v: unknown): ProviderSettings {
     speechRate: Math.round(num(o.speechRate, 'Speech rate', -10, 10)),
     piperPath: filePath(o.piperPath, 'Piper path', /\.exe$/i),
     piperVoice: filePath(o.piperVoice, 'Piper voice', /\.onnx$/i),
+    sherpaVoice: o.sherpaVoice as ProviderSettings['sherpaVoice'],
+    sentencePauseSec: num(o.sentencePauseSec, 'Sentence pause', 0.15, 0.8),
+    pronunciations: pronunciations(o.pronunciations),
+    voiceWordsPerSec: num(o.voiceWordsPerSec, 'Voice speed', 0, 5),
     visuals: [...new Set(o.visuals as ProviderSettings['visuals'])],
     comfyUrl: httpUrl(o.comfyUrl, 'ComfyUI URL'),
     comfyCheckpoint: str(o.comfyCheckpoint, 'ComfyUI checkpoint', 300),
@@ -144,6 +162,7 @@ export function settings(v: unknown): ProviderSettings {
     musicVolume: num(o.musicVolume, 'Music volume', 0, 1),
     sfxTransitions: o.sfxTransitions,
     sfxVolume: num(o.sfxVolume, 'Effect volume', 0, 1),
+    allowShareAlike: o.allowShareAlike,
     ffmpegPath: filePath(o.ffmpegPath, 'FFmpeg path', /\.exe$/i)
   };
 }
@@ -178,4 +197,15 @@ export function trackPatch(v: unknown): AudioTrackPatch {
     p.tags = o.tags.map((t) => str(t, 'Tag', 40).toLowerCase()).filter(Boolean);
   }
   return p;
+}
+
+export function pronunciations(v: unknown): Pronunciation[] {
+  if (!Array.isArray(v) || v.length > 300) throw new ValidationError('Pronunciations must be a list (max 300)');
+  return v.map((x) => {
+    const o = object(x, 'pronunciation');
+    const term = str(o.term, 'Term', 60);
+    const say = str(o.say, 'Pronunciation', 120);
+    if (!term || !say) throw new ValidationError('Each pronunciation needs a term and how to say it');
+    return { term, say };
+  });
 }

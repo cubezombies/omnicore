@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { STEP_LABELS, type Production, type ProductionSummary } from '../../../shared/production';
+import { STEP_LABELS, type Production, type ProductionMode, type ProductionSummary } from '../../../shared/production';
 import type { PageProps } from '../App';
 import { ContentList, useContent } from '../components/ContentList';
 import { ProductionDetail, StatusBadge, errorText, usd } from '../components/ProductionDetail';
@@ -16,6 +16,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<Production | null>(null);
   const [topic, setTopic] = useState('');
+  const [mode, setMode] = useState<ProductionMode>('explainer');
   const [error, setError] = useState<string | null>(null);
   const [showProviders, setShowProviders] = useState(false);
   const { items } = useContent(channel.id, ['script', 'production', 'review'], refreshKey);
@@ -53,7 +54,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
     e.preventDefault();
     setError(null);
     try {
-      const p = await window.api.createProduction(channel.id, { topic });
+      const p = await window.api.createProduction(channel.id, { topic, mode });
       setTopic('');
       setSelected(p.id);
       loadList();
@@ -80,6 +81,13 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
         <label className="field grow">
           <span>Topic</span>
           <input value={topic} maxLength={200} placeholder="e.g. how large language models work" onChange={(e) => setTopic(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Type</span>
+          <select value={mode} onChange={(e) => setMode(e.target.value as ProductionMode)}>
+            <option value="explainer">Explainer (background + research)</option>
+            <option value="news">News (recent coverage)</option>
+          </select>
         </label>
         <button className="primary" type="submit" disabled={!topic.trim()}>
           Produce video

@@ -73,3 +73,9 @@ export function resolveLibraryPath(libraryDir: string, rawUrl: string): string |
   const file = path.resolve(root, parts[0]);
   return path.dirname(file) === root ? file : null;
 }
+
+/** omnicore-media://sample/<file> → a file directly inside the voice-samples folder. */
+export function resolveSamplePath(samplesDir: string, rawUrl: string): string | null {
+  const asLib = rawUrl.replace(/^([a-z-]+:\/\/)sample\//i, '$1lib/');
+  return /^[a-z-]+:\/\/sample\//i.test(rawUrl) ? resolveLibraryPath(samplesDir, asLib) : null;
+}

@@ -23,6 +23,7 @@ interface ProductionRow {
   channel_id: number;
   content_id: number | null;
   topic: string;
+  mode: 'explainer' | 'news';
   user_notes: string;
   status: ProductionStatus;
   current_step: StepName | null;
@@ -101,7 +102,12 @@ export class ProductionRepository {
   // ---- settings -------------------------------------------------------
   getSettings(): ProviderSettings {
     const row = this.db.prepare(`SELECT value FROM settings WHERE key = 'providers'`).get() as { value: string } | undefined;
-    return { ...DEFAULT_SETTINGS, ...(row ? (JSON.parse(row.value) as Partial<ProviderSettings>) : {}) };
+    const saved = row ? (JSON.parse(row.value) as Partial<ProviderSettings>) : {};
+    const merged = { ...DEFAULT_SETTINGS, ...saved };
+    // 0.3 settings had only a Wikipedia toggle.
+    if (!saved.researchProviders && saved.wikipediaResearch === false) merged.researchProviders = merged.researchProviders.filter((p) => p !== 'wikipedia');
+    merged.wikipediaResearch = merged.researchProviders.includes('wikipedia');
+    return merged;
   }
 
   saveSettings(s: ProviderSettings): ProviderSettings {
@@ -112,12 +118,12 @@ export class ProductionRepository {
   }
 
   // ---- productions ----------------------------------------------------
-  create(channelId: number, topic: string, contentId: number | null, userNotes: string): Production {
+  create(channelId: number, topic: string, contentId: number | null, userNotes: string, mode: 'explainer' | 'news' = 'explainer'): Production {
     this.db.exec('BEGIN');
     try {
       const res = this.db
-        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes) VALUES (?,?,?,?)')
-        .run(channelId, contentId, topic, userNotes);
+        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes, mode) VALUES (?,?,?,?,?)')
+        .run(channelId, contentId, topic, userNotes, mode);
       const id = Number(res.lastInsertRowid);
       const ins = this.db.prepare('INSERT INTO production_steps (production_id, step) VALUES (?, ?)');
       for (const s of PRODUCTION_STEPS) ins.run(id, s);
@@ -158,6 +164,7 @@ export class ProductionRepository {
       channelId: Number(r.channel_id),
       contentId: r.content_id === null ? null : Number(r.content_id),
       topic: r.topic,
+      mode: r.mode ?? 'explainer',
       status: r.status,
       currentStep: r.current_step,
       error: r.error,

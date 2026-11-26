@@ -1,5 +1,6 @@
 import type { Brief, ProviderStatus, Scene, Source, Storyboard } from '../../shared/production';
 import type { WordTiming } from '../media/captions';
+import type { ResearchAdapter } from '../research/adapters';
 
 /**
  * Provider contracts. Every external capability (research, writing, voice,
@@ -68,10 +69,12 @@ export interface VisualProvider extends ProviderBase {
 }
 
 export interface Providers {
-  research: ResearchProvider[];
+  research: ResearchAdapter[];
   writer: Writer;
   /** Used when the primary writer is unreachable or its output fails validation. */
   fallbackWriter?: Writer;
   narration: NarrationProvider;
+  /** Used for the whole narration step when the chosen narrator is not installed/available. */
+  fallbackNarration?: NarrationProvider;
   visuals: VisualProvider[];
 }
