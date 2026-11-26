@@ -70,6 +70,8 @@ export interface VisualProvider extends ProviderBase {
 export interface Providers {
   research: ResearchProvider[];
   writer: Writer;
+  /** Used when the primary writer is unreachable or its output fails validation. */
+  fallbackWriter?: Writer;
   narration: NarrationProvider;
   visuals: VisualProvider[];
 }

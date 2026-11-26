@@ -6,12 +6,14 @@ import { Research } from './pages/Research';
 import { Studio } from './pages/Studio';
 import { Library } from './pages/Library';
 import { Business } from './pages/Business';
+import { SoundLibraryPage } from './pages/SoundLibrary';
 
 const PAGES = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'research', label: 'Research' },
   { key: 'studio', label: 'Studio' },
   { key: 'library', label: 'Content Library' },
+  { key: 'sounds', label: 'Sound Library' },
   { key: 'business', label: 'Business' }
 ] as const;
 export type PageKey = (typeof PAGES)[number]['key'];
@@ -90,6 +92,7 @@ export function App() {
         {props && page === 'research' && <Research {...props} />}
         {props && page === 'studio' && <Studio {...props} />}
         {props && page === 'library' && <Library {...props} />}
+        {props && page === 'sounds' && <SoundLibraryPage />}
         {props && page === 'business' && <Business {...props} />}
       </main>
 

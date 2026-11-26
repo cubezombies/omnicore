@@ -177,3 +177,13 @@ legend { font-weight: 600; padding: 0 var(--s1); }
 .ok-dot, .bad-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
 .ok-dot { background: #86efac; }
 .bad-dot { background: var(--danger); }
+
+/* Sound Library */
+.tracks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.track { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+.track-main { display: grid; grid-template-columns: minmax(0, 1fr) 280px auto; gap: var(--s4); align-items: center; }
+.track-main audio { width: 100%; height: 36px; }
+.track-actions { display: flex; gap: var(--s2); }
+.track-edit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
+.install-row { display: flex; gap: var(--s2); }
+.install-row select { flex: 1; }

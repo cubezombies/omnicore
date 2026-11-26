@@ -11,9 +11,10 @@ import {
   type Storyboard
 } from '../../shared/production';
 import type { ProductionRepository } from '../db/productions';
+import type { SoundLibrary } from '../library';
 import { buildAss, buildCues, type SceneTiming, type WordTiming } from '../media/captions';
 import { CancelledError, probe, runFfmpeg } from '../media/ffmpeg';
-import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, VIDEO_H, VIDEO_W, type RenderPlan } from '../media/render';
+import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, transitionTimes, VIDEO_H, VIDEO_W, type RenderPlan } from '../media/render';
 import { notesSource } from '../providers/research';
 import { buildBrief } from '../providers/text';
 import type { Providers } from '../providers/types';
@@ -26,6 +27,8 @@ export interface RunnerDeps {
   ffmpeg: (s: ProviderSettings) => string;
   channel: (channelId: number) => { name: string; niche: string };
   emit: (productionId: number) => void;
+  /** Music & Sound Library (optional: without it, renders have narration only). */
+  library?: SoundLibrary;
   /** Called after the script step (e.g. to copy the script into the linked content item). */
   onScript?: (productionId: number, storyboard: Storyboard) => void;
   /** Test seam: replaces the FFmpeg render call. */
@@ -36,7 +39,7 @@ const STEP_ASSETS: Partial<Record<StepName, AssetKind[]>> = {
   narration: ['narration'],
   visuals: ['image'],
   captions: ['captions'],
-  render: ['video', 'credits']
+  render: ['video', 'credits', 'music', 'sfx']
 };
 
 const pad2 = (n: number) => String(n + 1).padStart(2, '0');
@@ -138,7 +141,10 @@ export class ProductionRunner {
 
   private removeAssets(id: number, kind: AssetKind): void {
     const dir = this.dirFor(id);
-    for (const a of this.d.repo.deleteAssets(id, kind)) fs.rmSync(path.join(dir, a.path), { force: true });
+    for (const a of this.d.repo.deleteAssets(id, kind)) {
+      if (a.path.startsWith('library:')) continue; // shared library file, not owned by this production
+      fs.rmSync(path.join(dir, a.path), { force: true });
+    }
   }
 
   private async kick(): Promise<void> {
@@ -251,15 +257,25 @@ export class ProductionRunner {
     script: async (c) => {
       const p = this.d.repo.get(c.id);
       if (!p.brief) throw new Error('No brief. Re-run from Brief.');
-      c.progress(0.1, `Writing with ${c.providers.writer.label}…`);
-      const { storyboard, units } = await c.providers.writer.write(
-        { brief: p.brief, sources: p.sources, channelName: this.d.channel(p.channelId).name },
-        c.signal
-      );
-      c.cost(units * c.providers.writer.costPerUnitUsd);
+      const input = { brief: p.brief, sources: p.sources, channelName: this.d.channel(p.channelId).name };
+      const primary = c.providers.writer;
+      c.progress(0.1, `Writing with ${primary.label}…`);
+      let storyboard: Storyboard;
+      try {
+        const r = await primary.write(input, c.signal);
+        c.cost(r.units * primary.costPerUnitUsd);
+        storyboard = r.storyboard;
+      } catch (e) {
+        const fb = c.providers.fallbackWriter;
+        if (e instanceof CancelledError || c.signal.aborted || !fb) throw e;
+        const reason = `${primary.label}: ${errMsg(e)}`;
+        c.progress(0.6, `Falling back to ${fb.label}…`);
+        storyboard = { ...(await fb.write(input, c.signal)).storyboard, fallbackReason: reason };
+        storyboard.writer = `${storyboard.writer} (fallback)`;
+      }
       this.d.repo.update(c.id, { storyboard });
       this.d.onScript?.(c.id, storyboard);
-      c.progress(1, `${storyboard.scenes.length} scenes · ${storyboard.writer}`);
+      c.progress(1, `${storyboard.scenes.length} scenes · ${storyboard.writer}${storyboard.fallbackReason ? ` · ${storyboard.fallbackReason}` : ''}`);
     },
 
     narration: async (c) => {
@@ -371,10 +387,26 @@ export class ProductionRunner {
         output: 'render.tmp.mp4'
       };
       if (!fs.existsSync(path.join(c.dir, plan.captions))) throw new Error('Captions are missing. Re-run Captions.');
-      const music = c.settings.musicPath.trim();
-      if (music) {
-        if (!fs.existsSync(music)) throw new Error(`Background music file not found: ${music}. Fix or clear it in Studio → Providers.`);
-        plan.music = { path: music, volume: c.settings.musicVolume };
+      this.removeAssets(c.id, 'music');
+      this.removeAssets(c.id, 'sfx');
+      if (this.d.library && (c.settings.musicMode !== 'none' || c.settings.sfxTransitions)) {
+        const lib = this.d.library;
+        const { music, sfx } = await lib.pick(c.settings, c.id, c.signal);
+        if (music) plan.music = { path: lib.pathOf(music), volume: c.settings.musicVolume };
+        if (sfx) plan.sfx = { path: lib.pathOf(sfx), volume: c.settings.sfxVolume, atSec: transitionTimes(plan) };
+        for (const t of [music, sfx]) {
+          if (!t) continue;
+          this.d.repo.addAsset(c.id, {
+            kind: t.kind === 'music' ? 'music' : 'sfx',
+            sceneIndex: null,
+            path: `library:${t.file}`,
+            provider: 'sound-library',
+            sourceUrl: t.sourceUrl,
+            license: t.license,
+            attribution: `${t.title}${t.attribution ? ` by ${t.attribution}` : ''}${t.license ? `, ${t.license}` : ''}`,
+            meta: { trackId: t.id }
+          });
+        }
       }
       const total = totalDuration(plan);
       const args = buildRenderArgs(plan);
@@ -412,6 +444,11 @@ export class ProductionRunner {
     if (imgs.length) {
       lines.push('', 'Visuals:');
       for (const a of imgs) lines.push(`- Scene ${(a.sceneIndex ?? 0) + 1}: ${a.attribution}${a.sourceUrl ? ` ${a.sourceUrl}` : ''}`);
+    }
+    const sounds = p.assets.filter((a) => a.kind === 'music' || a.kind === 'sfx');
+    if (sounds.length) {
+      lines.push('', 'Music & sound:');
+      for (const a of sounds) lines.push(`- ${a.kind === 'music' ? 'Music' : 'Sound effect'}: ${a.attribution}${a.sourceUrl ? ` ${a.sourceUrl}` : ''}`);
     }
     const voice = p.assets.find((a) => a.kind === 'narration');
     if (voice) lines.push('', `Narration: synthetic voice (${String(voice.meta.voice ?? voice.provider)})`);

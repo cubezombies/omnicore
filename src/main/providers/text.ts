@@ -161,6 +161,9 @@ export function validateStoryboard(sb: Storyboard, sources: Source[]): Storyboar
   if (!Array.isArray(sb.scenes) || sb.scenes.length < 3 || sb.scenes.length > 10) {
     throw new InvalidStoryboardError(`Storyboard needs 3–10 scenes (got ${sb.scenes?.length ?? 0}).`);
   }
+  if (sb.scenes[0].role !== 'hook' || sb.scenes[sb.scenes.length - 1].role !== 'outro') {
+    throw new InvalidStoryboardError('Storyboard must start with a hook scene and end with an outro scene.');
+  }
   const facts = sb.scenes.filter((s) => s.role === 'fact');
   if (facts.length < 2) throw new InvalidStoryboardError('Storyboard needs at least two fact scenes.');
   sb.scenes.forEach((s, i) => {
@@ -173,5 +176,90 @@ export function validateStoryboard(sb: Storyboard, sources: Source[]): Storyboar
       throw new InvalidStoryboardError(`Scene ${i} states a fact without citing a known source.`);
     }
   });
+  return sb;
+}
+
+// ---- Grounding: reject claims the cited sources do not support ------------
+
+const normNum = (n: string) => n.replace(/[,\s]/g, '').replace(/\.$/, '');
+const numbersIn = (s: string) => (s.match(/\d[\d,]*(?:\.\d+)?%?/g) ?? []).map(normNum);
+
+const COMMON_OPENERS = new Set(
+  "let imagine picture think here here's now today so but yet still instead meanwhile basically simply essentially ever every most many some all one two three first second next finally then under behind inside without unlike just even turns that's it's you you're your we our let's ready stay follow sources source want need curious ok okay yes no not why what how who when where which whether if once while because though although and or nor for after before during since until unless as at by in on of to with from into over the a an this that these those it its they them their he she his her i me my is are was were be been being do does did have has had can could will would should may might must each other another such more less fewer few both either neither every same different new old big small huge tiny real really actually suddenly instead whatever whoever however wait look listen remember notice consider meet say said".split(
+    ' '
+  )
+);
+
+/**
+ * Proper nouns / acronyms: capitalised words not at a sentence start, ALL-CAPS
+ * tokens anywhere, and sentence-initial capitalised words that are not common
+ * sentence openers (e.g. "Google built…").
+ */
+export function namedTermsIn(s: string): string[] {
+  const out: string[] = [];
+  const re = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    const w = m[0].replace(/['’]s$/, '');
+    const before = s.slice(0, m.index).trimEnd();
+    const sentenceStart = before === '' || /[.!?:"“]$/.test(before);
+    const acronym = /^[A-Z][A-Z0-9-]+$/.test(w) && w.length >= 2;
+    const capital = /^[A-Z]/.test(w) && w.length > 1;
+    const opener = sentenceStart && COMMON_OPENERS.has(w.toLowerCase());
+    if (acronym || (capital && !opener && (!sentenceStart || /[A-Z0-9]/.test(w.slice(1)) || !STOP.has(w.toLowerCase())))) out.push(w);
+  }
+  return out;
+}
+
+const stem = (w: string) => w.toLowerCase().replace(/['’]s$/, '').replace(/(ies)$/, 'y').replace(/(?<=[a-z]{3})(es|s)$/, '');
+
+export interface GroundingContext {
+  /** Text that may always be mentioned (topic, channel name). */
+  allowed: string;
+}
+
+/**
+ * Lexical grounding checks for every scene. Fact scenes are checked against their
+ * cited sources only; hook and outro may only use terms that appear somewhere in
+ * the sources or the allowed text, and may not introduce numbers.
+ */
+export function groundingProblems(sb: Storyboard, sources: Source[], ctx: GroundingContext): string[] {
+  const problems: string[] = [];
+  const allText = `${sources.map((s) => `${s.title} ${s.excerpt}`).join(' ')} ${ctx.allowed}`;
+  for (const sc of sb.scenes) {
+    const cited = sources.filter((s) => sc.sourceIds.includes(s.id));
+    const support = sc.role === 'fact' ? `${cited.map((s) => `${s.title} ${s.excerpt}`).join(' ')} ${ctx.allowed}` : allText;
+    const supportLower = support.toLowerCase();
+    const supportNums = new Set(numbersIn(support));
+    const supportStems = new Set([...supportLower.matchAll(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)].map((x) => stem(x[0])));
+    const where = sc.role === 'fact' ? `its cited source${cited.length > 1 ? 's' : ''} ${sc.sourceIds.join(', ')}` : 'any source';
+    const label = `Scene ${sc.index + 1} (${sc.role})`;
+
+    for (const n of numbersIn(sc.narration)) {
+      if (!supportNums.has(n)) problems.push(`${label} states the number "${n}", which is not in ${where}.`);
+    }
+    for (const t of new Set(namedTermsIn(sc.narration))) {
+      const st = stem(t);
+      const parts = t.split(/[-]/).map(stem);
+      if (!supportStems.has(st) && !parts.every((p) => supportStems.has(p)) && !supportLower.includes(t.toLowerCase())) {
+        problems.push(`${label} mentions "${t}", which does not appear in ${where}.`);
+      }
+    }
+    if (sc.role === 'fact') {
+      const words = [...significantTokens(sc.narration)];
+      const supported = words.filter((w) => supportStems.has(stem(w)) || [...supportStems].some((s) => s.length >= 5 && (s.startsWith(w) || w.startsWith(s))));
+      if (words.length >= 4 && supported.length / words.length < 0.5) {
+        problems.push(
+          `${label} is mostly not supported by ${where} (only ${supported.length} of ${words.length} key words appear there). Restate what the source says.`
+        );
+      }
+    }
+  }
+  return problems;
+}
+
+export function validateGrounding(sb: Storyboard, sources: Source[], ctx: GroundingContext): Storyboard {
+  const problems = groundingProblems(sb, sources, ctx);
+  if (problems.length) throw new InvalidStoryboardError(problems.join(' '));
   return sb;
 }

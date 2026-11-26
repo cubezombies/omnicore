@@ -11,7 +11,8 @@ import { resolveFfmpeg } from './media/ffmpeg';
 import { ProductionRunner } from './pipeline/runner';
 import { buildProviders } from './providers/registry';
 import { registerIpc } from './ipc';
-import { DATA_DIR_ENV, resolveDataDir, resolveMediaPath } from './paths';
+import { SoundLibrary } from './library';
+import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath } from './paths';
 
 // Resolve and apply the data directory before anything else touches userData,
 // so the database and the Chromium profile both live outside the install dir.
@@ -150,7 +151,7 @@ function runSmoke(win: BrowserWindow): void {
       clearTimeout(timer);
       console.log(`SMOKE RESULT ${JSON.stringify(result)}`);
       const ok =
-        result.nav.length === 5 && result.channel.includes("AI, Actually") && !result.hasNode && result.hasApi && !result.err;
+        result.nav.length === 6 && result.channel.includes("AI, Actually") && !result.hasNode && result.hasApi && !result.err;
       if (!ok) return fail('unexpected renderer state');
       const shotDir = process.env.AIMO_SMOKE_SHOT; // optional: capture UI screenshots for review
       if (shotDir) {
@@ -209,10 +210,10 @@ function runSmoke(win: BrowserWindow): void {
 }
 
 /** omnicore-media://p/<productionId>/<relative path> → file inside that production's folder only. */
-function registerMediaProtocol(productionsDir: string): void {
+function registerMediaProtocol(productionsDir: string, libraryDir: string): void {
   const root = path.resolve(productionsDir);
   protocol.handle(MEDIA_SCHEME, (req) => {
-    const file = resolveMediaPath(root, req.url);
+    const file = new URL(req.url).hostname === 'lib' ? resolveLibraryPath(libraryDir, req.url) : resolveMediaPath(root, req.url);
     if (!file || !fs.existsSync(file)) return new Response('Not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString(), { headers: req.headers });
   });
@@ -238,13 +239,16 @@ if (!app.requestSingleInstanceLock()) {
     const productions = new ProductionRepository(db);
     const productionsDir = path.join(dataDir, 'productions');
     const tmpDir = path.join(dataDir, 'tmp');
+    const dirs = { tmpDir, toolsDir: path.join(dataDir, 'tools') };
+    const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath));
     fs.mkdirSync(productionsDir, { recursive: true });
     productions.markInterrupted();
     const runner = new ProductionRunner({
       repo: productions,
       productionsDir,
       settings: () => productions.getSettings(),
-      providers: (s) => buildProviders(s, tmpDir),
+      providers: (s) => buildProviders(s, dirs),
+      library,
       ffmpeg: (s) => resolveFfmpeg(s.ffmpegPath),
       channel: (id) => {
         const c = repo.listChannels().find((x) => x.id === id);
@@ -263,8 +267,8 @@ if (!app.requestSingleInstanceLock()) {
         }
       }
     });
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, tmpDir, isTrustedSender });
-    registerMediaProtocol(productionsDir);
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, isTrustedSender });
+    registerMediaProtocol(productionsDir, library.dir);
     app.on('will-quit', () => db.close());
 
     createWindow();

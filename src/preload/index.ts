@@ -24,6 +24,12 @@ const api: AppApi = {
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   saveSettings: (s) => ipcRenderer.invoke(IPC.saveSettings, s),
   checkProviders: () => ipcRenderer.invoke(IPC.checkProviders),
+  installPiper: (voice) => ipcRenderer.invoke(IPC.installPiper, voice),
+  listSounds: () => ipcRenderer.invoke(IPC.listSounds),
+  generateSound: (g) => ipcRenderer.invoke(IPC.generateSound, g),
+  importSound: (kind) => ipcRenderer.invoke(IPC.importSound, kind),
+  updateSound: (id, patch) => ipcRenderer.invoke(IPC.updateSound, id, patch),
+  deleteSound: (id) => ipcRenderer.invoke(IPC.deleteSound, id),
   onProductionChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, id: unknown) => {
       if (typeof id === 'number') cb(id);

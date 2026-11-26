@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { VISUAL_PROVIDERS, type ProviderSettings, type ProviderStatus, type VisualProviderId } from '../../../shared/production';
+import { PIPER_VOICES, VISUAL_PROVIDERS, type AudioTrack, type PiperVoiceId, type ProviderSettings, type ProviderStatus, type VisualProviderId } from '../../../shared/production';
 import { errorText } from './ProductionDetail';
 
 const VISUAL_LABELS: Record<VisualProviderId, string> = {
@@ -14,6 +14,9 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
   const [checking, setChecking] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tracks, setTracks] = useState<AudioTrack[]>([]);
+  const [voiceToInstall, setVoiceToInstall] = useState<PiperVoiceId>(PIPER_VOICES[0].id);
+  const [installing, setInstalling] = useState(false);
 
   const check = () => {
     setChecking(true);
@@ -25,6 +28,7 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
   };
   useEffect(() => {
     void window.api.getSettings().then(setS);
+    void window.api.listSounds().then(setTracks);
     check();
   }, []);
 
@@ -44,6 +48,22 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
     [v[i], v[j]] = [v[j], v[i]];
     set('visuals', v);
   };
+
+  async function install() {
+    setInstalling(true);
+    setError(null);
+    setMsg('Installing Piper…');
+    try {
+      setS(await window.api.installPiper(voiceToInstall));
+      setMsg('Piper voice installed and selected.');
+      check();
+    } catch (e) {
+      setError(errorText(e));
+      setMsg(null);
+    } finally {
+      setInstalling(false);
+    }
+  }
 
   async function save() {
     setError(null);
@@ -81,11 +101,11 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
           <legend>Script writer</legend>
           <label className="check">
             <input type="radio" name="writer" checked={s.writer === 'extractive'} onChange={() => set('writer', 'extractive')} />
-            Extractive: narrates sourced facts verbatim (no AI)
+            Deterministic: narrates sourced facts verbatim (no AI, offline)
           </label>
           <label className="check">
             <input type="radio" name="writer" checked={s.writer === 'openai-compatible'} onChange={() => set('writer', 'openai-compatible')} />
-            Local LLM (LM Studio, Ollama or any OpenAI-compatible server)
+            Strata / local LLM (any OpenAI-compatible server)
           </label>
           {s.writer === 'openai-compatible' && (
             <>
@@ -94,7 +114,7 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
                 <input value={s.llmBaseUrl} onChange={(e) => set('llmBaseUrl', e.target.value)} />
               </label>
               <label className="field">
-                <span>Model (blank = first loaded)</span>
+                <span>Model (blank = discover the loaded model)</span>
                 <input list="llm-models" value={s.llmModel} onChange={(e) => set('llmModel', e.target.value)} />
                 <datalist id="llm-models">
                   {opts('openai-compatible').map((m) => (
@@ -102,23 +122,68 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
                   ))}
                 </datalist>
               </label>
+              <label className="field">
+                <span>Timeout (seconds)</span>
+                <input type="number" min={10} max={1800} value={s.llmTimeoutSec} onChange={(e) => set('llmTimeoutSec', Number(e.target.value))} />
+              </label>
+              <label className="check">
+                <input type="checkbox" checked={s.writerFallback} onChange={(e) => set('writerFallback', e.target.checked)} />
+                Fall back to the deterministic writer if the LLM is unavailable or its script fails validation
+              </label>
             </>
           )}
         </fieldset>
 
         <fieldset>
           <legend>Narration</legend>
-          <label className="field">
-            <span>Windows voice</span>
-            <select value={s.voice} onChange={(e) => set('voice', e.target.value)}>
-              <option value="">System default</option>
-              {opts('windows-sapi').map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
+          <label className="check">
+            <input type="radio" name="narration" checked={s.narration === 'windows-sapi'} onChange={() => set('narration', 'windows-sapi')} />
+            Windows speech (built in, exact word timing)
           </label>
+          <label className="check">
+            <input type="radio" name="narration" checked={s.narration === 'piper'} onChange={() => set('narration', 'piper')} />
+            Piper (local neural voice, more natural)
+          </label>
+          {s.narration === 'windows-sapi' ? (
+            <label className="field">
+              <span>Windows voice</span>
+              <select value={s.voice} onChange={(e) => set('voice', e.target.value)}>
+                <option value="">System default</option>
+                {opts('windows-sapi').map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <>
+              <label className="field">
+                <span>Installed Piper voice</span>
+                <select value={s.piperVoice} onChange={(e) => set('piperVoice', e.target.value)}>
+                  <option value="">First installed</option>
+                  {opts('piper').map((v) => (
+                    <option key={v} value={v}>
+                      {v.split(/[\\/]/).pop()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="install-row">
+                <select aria-label="Piper voice to install" value={voiceToInstall} onChange={(e) => setVoiceToInstall(e.target.value as PiperVoiceId)}>
+                  {PIPER_VOICES.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.label} · {v.license}
+                    </option>
+                  ))}
+                </select>
+                <button className="secondary" disabled={installing} onClick={install}>
+                  {installing ? 'Installing…' : 'Install voice'}
+                </button>
+              </div>
+              <p className="muted small">Downloads Piper and the voice (free, ~60–80 MB) into the app's data folder. Only voices whose licence allows commercial use are listed.</p>
+            </>
+          )}
           <label className="field">
             <span>Speech rate ({s.speechRate})</span>
             <input type="range" min={-5} max={5} step={1} value={s.speechRate} onChange={(e) => set('speechRate', Number(e.target.value))} />
@@ -168,15 +233,43 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
         </fieldset>
 
         <fieldset>
-          <legend>Audio &amp; render</legend>
+          <legend>Music, sound &amp; render</legend>
           <label className="field">
-            <span>Background music file (optional, absolute path; ducked under narration)</span>
-            <input value={s.musicPath} placeholder="F:\Music\bed.mp3" onChange={(e) => set('musicPath', e.target.value)} />
+            <span>Background music (from the Sound Library, ducked under narration)</span>
+            <select
+              value={s.musicMode === 'track' ? String(s.musicTrackId) : s.musicMode}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === 'none' || v === 'auto') setS({ ...s, musicMode: v });
+                else setS({ ...s, musicMode: 'track', musicTrackId: Number(v) });
+                setMsg(null);
+              }}
+            >
+              <option value="none">No music</option>
+              <option value="auto">Auto: pick a library track</option>
+              {tracks
+                .filter((t) => t.kind === 'music')
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.title}
+                  </option>
+                ))}
+            </select>
           </label>
           <label className="field">
             <span>Music volume ({Math.round(s.musicVolume * 100)}%)</span>
             <input type="range" min={0} max={0.5} step={0.01} value={s.musicVolume} onChange={(e) => set('musicVolume', Number(e.target.value))} />
           </label>
+          <label className="check">
+            <input type="checkbox" checked={s.sfxTransitions} onChange={(e) => set('sfxTransitions', e.target.checked)} />
+            Transition sound at scene cuts
+          </label>
+          {s.sfxTransitions && (
+            <label className="field">
+              <span>Effect volume ({Math.round(s.sfxVolume * 100)}%)</span>
+              <input type="range" min={0} max={1} step={0.05} value={s.sfxVolume} onChange={(e) => set('sfxVolume', Number(e.target.value))} />
+            </label>
+          )}
           <label className="field">
             <span>FFmpeg path (blank = bundled)</span>
             <input value={s.ffmpegPath} onChange={(e) => set('ffmpegPath', e.target.value)} />

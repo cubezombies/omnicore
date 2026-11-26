@@ -17,7 +17,20 @@ export interface RenderPlan {
   captions: string; // ASS file relative to cwd (relative avoids filter-path escaping on Windows)
   output: string;
   music?: { path: string; volume: number };
+  /** One-shot effect mixed in at each listed time (e.g. a whoosh at scene cuts). */
+  sfx?: { path: string; volume: number; atSec: number[] };
 }
+
+/** Times (s) at which a transition effect starts: slightly before each cut so it peaks on the cut. */
+export const transitionTimes = (p: Pick<RenderPlan, 'scenes'>, lead = 0.3): number[] => {
+  const out: number[] = [];
+  let t = 0;
+  p.scenes.slice(0, -1).forEach((s) => {
+    t += s.durationSec;
+    out.push(Math.max(0, t - lead));
+  });
+  return out;
+};
 
 /** Round to whole frames so audio padding and video length agree exactly. */
 export const frameAlign = (sec: number): number => Math.max(1, Math.round(sec * FPS)) / FPS;
@@ -31,6 +44,9 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   for (const s of p.scenes) args.push('-i', s.image);
   for (const s of p.scenes) args.push('-i', s.audio);
   if (p.music) args.push('-stream_loop', '-1', '-i', p.music.path);
+  const sfxTimes = p.sfx?.atSec.filter((t) => t >= 0) ?? [];
+  if (p.sfx && sfxTimes.length) args.push('-i', p.sfx.path);
+  const sfxInput = 2 * n + (p.music ? 1 : 0);
 
   const W2 = Math.round(VIDEO_W * 1.25);
   const H2 = Math.round(VIDEO_H * 1.25);
@@ -56,9 +72,23 @@ export function buildRenderArgs(p: RenderPlan): string[] {
     f.push(`[${2 * n}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${p.music.volume.toFixed(3)}[mus]`);
     f.push(`[narr]asplit=2[n1][n2]`);
     f.push(`[mus][n1]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[duck]`);
-    f.push(`[n2][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`);
+    f.push(`[n2][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[bed]`);
   } else {
-    f.push(`[narr]anull[aout]`);
+    f.push(`[narr]anull[bed]`);
+  }
+  if (p.sfx && sfxTimes.length) {
+    const k = sfxTimes.length;
+    f.push(
+      `[${sfxInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${p.sfx.volume.toFixed(3)}` +
+        (k > 1 ? `,asplit=${k}${sfxTimes.map((_, i) => `[sx${i}]`).join('')}` : '[sx0]')
+    );
+    sfxTimes.forEach((t, i) => {
+      const ms = Math.round(t * 1000);
+      f.push(`[sx${i}]adelay=${ms}|${ms}[sd${i}]`);
+    });
+    f.push(`[bed]${sfxTimes.map((_, i) => `[sd${i}]`).join('')}amix=inputs=${k + 1}:duration=first:dropout_transition=0:normalize=0[aout]`);
+  } else {
+    f.push(`[bed]anull[aout]`);
   }
 
   const total = totalDuration(p);

@@ -57,3 +57,19 @@ export function resolveMediaPath(productionsDir: string, rawUrl: string): string
   const file = path.resolve(prodDir, ...parts.slice(1));
   return isInside(file, prodDir) && file !== prodDir ? file : null;
 }
+
+/** omnicore-media://lib/<file> → a file directly inside the sound library folder. */
+export function resolveLibraryPath(libraryDir: string, rawUrl: string): string | null {
+  let u: URL;
+  let parts: string[];
+  try {
+    u = new URL(rawUrl);
+    parts = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  if (u.hostname !== 'lib' || parts.length !== 1 || /[\\/:]|^\.\.?$/.test(parts[0])) return null;
+  const root = path.resolve(libraryDir);
+  const file = path.resolve(root, parts[0]);
+  return path.dirname(file) === root ? file : null;
+}

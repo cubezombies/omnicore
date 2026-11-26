@@ -1,11 +1,13 @@
-import { ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { IPC, type AppApi, type AppInfo } from '../shared/domain';
 import type { ProductionRepository } from './db/productions';
 import type { Repository } from './db/repository';
 import type { ProductionRunner } from './pipeline/runner';
-import { checkProviders } from './providers/registry';
+import type { SoundLibrary } from './library';
+import { installPiper } from './providers/piper';
+import { checkProviders, type ProviderDirs } from './providers/registry';
 import * as v from './validation';
 
 type Handler = (...args: unknown[]) => unknown;
@@ -16,7 +18,8 @@ export interface IpcDeps {
   productions: ProductionRepository;
   runner: ProductionRunner;
   info: AppInfo;
-  tmpDir: string;
+  dirs: ProviderDirs;
+  library: SoundLibrary;
   isTrustedSender: (e: IpcMainInvokeEvent) => boolean;
 }
 
@@ -24,7 +27,7 @@ export interface IpcDeps {
  * Register every IPC handler. Each one checks the sender is our own top frame
  * and validates its arguments before touching the database or filesystem.
  */
-export function registerIpc({ repo, productions, runner, info, tmpDir, isTrustedSender }: IpcDeps): void {
+export function registerIpc({ repo, productions, runner, info, dirs, library, isTrustedSender }: IpcDeps): void {
   const handlers: Record<InvokeKey, Handler> = {
     listChannels: () => repo.listChannels(),
     listContent: (channelId, stages) => repo.listContent(v.id(channelId, 'channelId'), v.stages(stages)),
@@ -66,7 +69,27 @@ export function registerIpc({ repo, productions, runner, info, tmpDir, isTrusted
     },
     getSettings: () => productions.getSettings(),
     saveSettings: (s) => productions.saveSettings(v.settings(s)),
-    checkProviders: () => checkProviders(productions.getSettings(), tmpDir)
+    checkProviders: () => checkProviders(productions.getSettings(), dirs),
+    installPiper: async (voice) => {
+      const r = await installPiper(dirs.toolsDir, v.piperVoiceId(voice), AbortSignal.timeout(20 * 60_000));
+      return productions.saveSettings({ ...productions.getSettings(), narration: 'piper', piperPath: '', piperVoice: r.voicePath });
+    },
+    listSounds: () => library.list(),
+    generateSound: (g) => library.generate(v.generatorId(g)),
+    importSound: async (kind) => {
+      const k = v.audioKind(kind);
+      const win = BrowserWindow.getAllWindows()[0];
+      const opts: Electron.OpenDialogOptions = {
+        title: k === 'music' ? 'Import music' : 'Import sound effect',
+        properties: ['openFile'],
+        filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'opus'] }]
+      };
+      const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+      if (res.canceled || !res.filePaths[0]) return null;
+      return library.import(res.filePaths[0], k);
+    },
+    updateSound: (id, patch) => library.update(v.id(id), v.trackPatch(patch)),
+    deleteSound: (id) => library.delete(v.id(id))
   };
 
   for (const key of Object.keys(handlers) as InvokeKey[]) {

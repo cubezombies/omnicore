@@ -91,6 +91,22 @@ const MIGRATIONS: string[] = [
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
   CREATE INDEX idx_assets_production ON production_assets(production_id, kind);
+  `,
+  // v3: Music & Sound Library.
+  `
+  CREATE TABLE audio_library (
+    id            INTEGER PRIMARY KEY,
+    kind          TEXT NOT NULL CHECK (kind IN ('music','sfx')),
+    title         TEXT NOT NULL,
+    file          TEXT NOT NULL,
+    duration_sec  REAL NOT NULL,
+    license       TEXT NOT NULL DEFAULT '',
+    attribution   TEXT NOT NULL DEFAULT '',
+    source_url    TEXT NOT NULL DEFAULT '',
+    tags          TEXT NOT NULL DEFAULT '[]',
+    origin        TEXT NOT NULL CHECK (origin IN ('generated','imported')),
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
   `
 ];
 

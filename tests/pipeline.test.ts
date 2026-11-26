@@ -235,12 +235,25 @@ describe('production pipeline', () => {
   }, 120_000);
 
   it('fails the script step clearly when the local LLM server is down', async () => {
-    providers.writer = new OpenAICompatibleWriter('http://127.0.0.1:9', '') as Writer;
+    providers.writer = new OpenAICompatibleWriter({ baseUrl: 'http://127.0.0.1:9', model: '', timeoutMs: 5000 }) as Writer;
     const runner = makeRunner();
     const p = repo.create(1, 'large language models', null, '');
     runner.enqueue(p.id);
     await runner.idle();
-    expect(repo.get(p.id).error).toMatch(/^Script & storyboard: No local LLM server at http:\/\/127\.0\.0\.1:9/);
+    expect(repo.get(p.id).error).toMatch(/^Script & storyboard: No LLM server is answering at http:\/\/127\.0\.0\.1:9/);
+  }, 60_000);
+
+  it('falls back to the deterministic writer and records why when the LLM is down', async () => {
+    providers.writer = new OpenAICompatibleWriter({ baseUrl: 'http://127.0.0.1:9', model: '', timeoutMs: 5000 }) as Writer;
+    providers.fallbackWriter = new ExtractiveWriter();
+    const runner = makeRunner({ render: async () => { throw new Error('stop'); } });
+    const p = repo.create(1, 'large language models', null, '');
+    runner.enqueue(p.id);
+    await runner.idle();
+    const r = repo.get(p.id);
+    expect(r.storyboard!.writer).toBe('extractive (fallback)');
+    expect(r.storyboard!.fallbackReason).toMatch(/No LLM server is answering/);
+    expect(r.steps.find((s) => s.step === 'script')!.detail).toContain('fallback');
   }, 60_000);
 
   it('rerun from a step clears that step and later outputs', async () => {

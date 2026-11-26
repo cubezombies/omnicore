@@ -192,7 +192,7 @@ describe('settings + production validation', () => {
     expect(() => v.settings({ ...DEFAULT_SETTINGS, writer: 'gpt-paid' })).toThrow(/writer/);
     expect(() => v.settings({ ...DEFAULT_SETTINGS, visuals: ['stock-paid'] })).toThrow(/visual/);
     expect(() => v.settings({ ...DEFAULT_SETTINGS, llmBaseUrl: 'file:///c:/x' })).toThrow(/URL/);
-    expect(() => v.settings({ ...DEFAULT_SETTINGS, musicPath: 'music.mp3' })).toThrow(/absolute/);
+    expect(() => v.settings({ ...DEFAULT_SETTINGS, piperPath: 'piper.exe' })).toThrow(/absolute/);
     expect(() => v.settings({ ...DEFAULT_SETTINGS, speechRate: 50 })).toThrow(/between/);
   });
   it('validates new productions and step names', () => {

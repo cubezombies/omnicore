@@ -1,5 +1,10 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
 import type {
+  AudioKind,
+  AudioTrack,
+  AudioTrackPatch,
+  PiperVoiceId,
+  SoundGeneratorId,
   NewProduction,
   Production,
   ProductionSummary,
@@ -114,6 +119,17 @@ export interface AppApi {
   getSettings(): Promise<ProviderSettings>;
   saveSettings(settings: ProviderSettings): Promise<ProviderSettings>;
   checkProviders(): Promise<ProviderStatus[]>;
+  /** Download Piper and a commercially usable voice into the data dir; returns updated settings. */
+  installPiper(voice: PiperVoiceId): Promise<ProviderSettings>;
+
+  // Music & Sound Library
+  listSounds(): Promise<AudioTrack[]>;
+  generateSound(generator: SoundGeneratorId): Promise<AudioTrack>;
+  /** Opens a file picker in the main process; resolves null if the user cancels. */
+  importSound(kind: AudioKind): Promise<AudioTrack | null>;
+  updateSound(id: number, patch: AudioTrackPatch): Promise<AudioTrack>;
+  deleteSound(id: number): Promise<void>;
+
   /** Subscribe to production changes; returns an unsubscribe function. */
   onProductionChanged(cb: (productionId: number) => void): () => void;
 }
@@ -140,5 +156,11 @@ export const IPC = {
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   checkProviders: 'providers:check',
+  installPiper: 'providers:installPiper',
+  listSounds: 'sounds:list',
+  generateSound: 'sounds:generate',
+  importSound: 'sounds:import',
+  updateSound: 'sounds:update',
+  deleteSound: 'sounds:delete',
   onProductionChanged: 'productions:changed'
 } as const satisfies Record<keyof AppApi, string>;
