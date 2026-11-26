@@ -1,6 +1,7 @@
+import type { ApprovalState, PlatformMetadata, ProductionDestination } from './operations';
 // Video Factory: shared types for productions (topic → finished 9:16 MP4).
 
-export const PRODUCTION_STEPS = ['research', 'brief', 'script', 'narration', 'visuals', 'captions', 'render'] as const;
+export const PRODUCTION_STEPS = ['research', 'brief', 'script', 'narration', 'visuals', 'captions', 'render', 'qa'] as const;
 export type StepName = (typeof PRODUCTION_STEPS)[number];
 
 export const STEP_LABELS: Record<StepName, string> = {
@@ -10,7 +11,8 @@ export const STEP_LABELS: Record<StepName, string> = {
   narration: 'Narration',
   visuals: 'Visuals',
   captions: 'Captions',
-  render: 'Render'
+  render: 'Render',
+  qa: 'Quality check'
 };
 
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed';
@@ -167,9 +169,16 @@ export interface Production {
   updatedAt: string;
   steps: ProductionStep[];
   assets: ProductionAsset[];
+  /** 0.5: autonomy, destinations, publication readiness. */
+  origin: 'manual' | 'autonomous';
+  ideaId: number | null;
+  destinations: ProductionDestination[];
+  metadata: Record<string, PlatformMetadata>;
+  approval: ApprovalState;
+  publishStatus: string;
 }
 
-export type ProductionSummary = Omit<Production, 'sources' | 'brief' | 'storyboard' | 'assets'>;
+export type ProductionSummary = Omit<Production, 'sources' | 'brief' | 'storyboard' | 'assets' | 'metadata'>;
 
 export const VISUAL_PROVIDERS = ['wikimedia-commons', 'comfyui', 'title-card'] as const;
 export type VisualProviderId = (typeof VISUAL_PROVIDERS)[number];
@@ -354,9 +363,13 @@ export interface AudioTrack {
   tags: string[];
   origin: 'generated' | 'imported';
   createdAt: string;
+  /** embedded = mixed into the video file under its own licence; platform_native = attached on the platform (not exportable). */
+  usage: 'embedded' | 'platform_native';
+  commercialUse: 'yes' | 'no' | 'unknown';
+  restrictions: { platforms?: string[]; territories?: string[]; accountTypes?: string[]; notes?: string };
 }
 
-export type AudioTrackPatch = Partial<Pick<AudioTrack, 'title' | 'license' | 'attribution' | 'sourceUrl' | 'tags'>>;
+export type AudioTrackPatch = Partial<Pick<AudioTrack, 'title' | 'license' | 'attribution' | 'sourceUrl' | 'tags' | 'commercialUse'>>;
 
 /** Built-in generators: sounds synthesised locally by FFmpeg, free of third-party rights. */
 export const SOUND_GENERATORS = [

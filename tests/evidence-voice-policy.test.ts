@@ -399,3 +399,10 @@ describe('fresh-install defaults and 0.3 → 0.4 settings migration', () => {
     expect(v.settings({ ...DEFAULT_SETTINGS, sherpaVoice: 'bf_emma' }).sherpaVoice).toBe('bf_emma');
   });
 });
+
+describe('typographic punctuation in narration', () => {
+  it('sends plain apostrophes to the voice engine', async () => {
+    const { speechTokens, spokenText } = await import('../src/main/providers/pronunciation');
+    expect(spokenText(speechTokens('Nvidia’s CEO hasn’t said “yes”.'))).not.toMatch(/[’‘“”]/);
+  });
+});

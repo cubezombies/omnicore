@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { QaRun } from '../../../shared/operations';
 import {
   CLAIM_KIND_LABELS,
   SOURCE_KIND_LABELS,
@@ -178,6 +179,8 @@ export function ProductionDetail({ production: p, onDeleted }: { production: Pro
         </section>
       )}
 
+      <ReadinessPanel production={p} />
+
       {p.brief?.claims && p.brief.claims.length > 0 && (
         <section>
           <h3>Evidence claims</h3>
@@ -221,5 +224,87 @@ export function ProductionDetail({ production: p, onDeleted }: { production: Pro
         </section>
       )}
     </article>
+  );
+}
+
+const APPROVAL_LABEL: Record<string, string> = {
+  none: 'Not checked yet',
+  awaiting_review: 'Ready for your review',
+  approved: 'Approved by you',
+  rejected: 'Rejected by you',
+  blocked: 'Blocked by QA (critical failure)'
+};
+
+/** Destinations, QA history, platform metadata and the approval gate for one production. */
+function ReadinessPanel({ production: p }: { production: Production }) {
+  const [runs, setRuns] = useState<QaRun[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [exported, setExported] = useState<string | null>(null);
+  useEffect(() => {
+    void window.api.qaRuns(p.id).then(setRuns);
+  }, [p.id, p.updatedAt]);
+  const last = runs.at(-1);
+  const act = async (fn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const meta = Object.values(p.metadata ?? {});
+  return (
+    <section className="readiness">
+      <h3>Publication readiness</h3>
+      <p className="small">
+        <span className={`badge ${p.approval === 'blocked' ? 'prod-failed' : p.approval === 'approved' ? 'prod-completed' : 'prod-queued'}`}>{APPROVAL_LABEL[p.approval] ?? p.approval}</span>{' '}
+        <span className="muted">{p.origin === 'autonomous' ? 'Created autonomously' : 'Created manually'} · publishing: {p.publishStatus.replace('_', ' ')}</span>
+      </p>
+      {error && <p className="field-error small" role="alert">{error}</p>}
+      <ul className="sources">
+        {p.destinations.map((d) => (
+          <li key={d.platform}>
+            <strong>{d.platform}</strong> → {d.handle ?? 'no account assigned'} ({d.privacy}){d.blockers.length ? <span className="field-error small"> · cannot publish yet: {d.blockers.join(' ')}</span> : <span className="muted small"> · ready</span>}
+          </li>
+        ))}
+        {!p.destinations.length && <li className="muted small">No destination assigned.</li>}
+      </ul>
+      {last && (
+        <details open={last.status !== 'passed'}>
+          <summary>
+            QA round {last.round}: <strong>{last.status}</strong> · {last.summary.checks} checks · {last.summary.critical} critical, {last.summary.major} major, {last.summary.minor} minor
+            {runs.length > 1 ? ` · ${runs.length} rounds (repairs: ${runs.flatMap((r) => r.summary.repairs).join(', ') || 'none'})` : ''}
+          </summary>
+          <ul className="qa-list">
+            {last.findings.map((f) => (
+              <li key={f.checkId} className={f.passed ? 'qa-pass' : `qa-fail qa-${f.severity}`}>
+                <span className="qa-mark">{f.passed ? '✓' : '✕'}</span> <span className="muted small">{f.category} · {f.severity}</span> {f.message}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {meta.map((m) => (
+        <details key={m.platform}>
+          <summary>{m.platform} metadata</summary>
+          <p className="small"><strong>{m.title}</strong></p>
+          <pre className="meta-caption">{m.caption}</pre>
+          {m.manualSteps.length > 0 && <ul className="muted small">{m.manualSteps.map((s) => <li key={s}>{s}</li>)}</ul>}
+        </details>
+      ))}
+      <div className="prod-actions">
+        {p.approval === 'awaiting_review' && (
+          <>
+            <input aria-label="Approval note" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+            <button className="primary" onClick={() => act(() => window.api.approveProduction(p.id, note))}>Approve for publication</button>
+            <button className="danger" onClick={() => act(() => window.api.rejectProduction(p.id, note))}>Reject</button>
+          </>
+        )}
+        <button className="secondary" onClick={() => act(() => window.api.runQa(p.id))}>Re-run QA</button>
+        <button className="secondary" onClick={() => act(async () => setExported(await window.api.exportAudit(p.id)))}>Export audit report</button>
+        {exported && <span className="muted small">Saved {exported}</span>}
+      </div>
+    </section>
   );
 }

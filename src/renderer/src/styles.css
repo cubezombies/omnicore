@@ -199,3 +199,16 @@ legend { font-weight: 600; padding: 0 var(--s1); }
 .sample { display: flex; flex-direction: column; gap: var(--s1); }
 .sample audio { width: 100%; }
 .new-prod select { min-width: 220px; }
+
+/* 0.5: operations, accounts, readiness */
+.idea { display: flex; justify-content: space-between; gap: var(--s3); align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3) var(--s4); }
+.idea-main { min-width: 0; }
+.readiness { border-top: 1px solid var(--border); padding-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+.qa-list { list-style: none; margin: var(--s2) 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.qa-mark { display: inline-block; width: 1.2em; font-weight: 700; }
+.qa-pass .qa-mark { color: #86efac; }
+.qa-fail .qa-mark { color: var(--danger); }
+.qa-critical { color: var(--danger); }
+.qa-major { color: #fdba74; }
+.meta-caption { white-space: pre-wrap; font: 13px/1.5 var(--font); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s3); margin: 0; }
+details summary { cursor: pointer; }

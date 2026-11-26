@@ -55,6 +55,22 @@ export async function fetchRetry(url: string, o: FetchOptions = {}): Promise<Res
   throw last instanceof Error ? last : new Error(String(last));
 }
 
+/** Decode a response body honouring the declared charset (header or XML/HTML prolog); falls back to Windows-1252 for mislabelled feeds. */
+export async function readText(res: Response): Promise<string> {
+  const buf = Buffer.from(await res.arrayBuffer());
+  const declared = /charset=["']?([\w-]+)/i.exec(res.headers.get('content-type') ?? '')?.[1] ?? /<\?xml[^>]*encoding=["']([\w-]+)/i.exec(buf.subarray(0, 300).toString('latin1'))?.[1] ?? /<meta[^>]+charset=["']?([\w-]+)/i.exec(buf.subarray(0, 4000).toString('latin1'))?.[1];
+  const tryDecode = (enc: string) => {
+    try {
+      return new TextDecoder(enc.toLowerCase(), { fatal: false }).decode(buf);
+    } catch {
+      return null;
+    }
+  };
+  let text = (declared && tryDecode(declared)) || tryDecode('utf-8')!;
+  if ((text.match(/\uFFFD/g)?.length ?? 0) > 2) text = tryDecode('windows-1252') ?? text;
+  return text;
+}
+
 export async function fetchJson<T>(url: string, o: FetchOptions = {}): Promise<T> {
   const res = await fetchRetry(url, o);
   return (await res.json()) as T;

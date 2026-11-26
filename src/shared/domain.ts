@@ -1,4 +1,5 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
+import type { AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, Privacy, QaRun } from './operations';
 import type {
   AudioKind,
   AudioTrack,
@@ -33,6 +34,10 @@ export interface Channel {
   niche: string;
   platforms: string[];
   createdAt: string;
+  /** 0.5: the brand's presenter voice (overrides the global narration settings for this brand). */
+  presenterEngine?: string;
+  presenterVoice?: string;
+  editorial?: { keywords?: string[] };
 }
 
 export interface ContentItem {
@@ -135,6 +140,32 @@ export interface AppApi {
   updateSound(id: number, patch: AudioTrackPatch): Promise<AudioTrack>;
   deleteSound(id: number): Promise<void>;
 
+  // 0.5 autonomous operations
+  getAutonomy(): Promise<AutonomySettings>;
+  saveAutonomy(s: AutonomySettings): Promise<AutonomySettings>;
+  engineStatus(): Promise<EngineStatus>;
+  runDiscoveryNow(): Promise<{ created: number; candidates: number }>;
+  listIdeas(): Promise<Idea[]>;
+  produceIdea(ideaId: number): Promise<number>;
+  rejectIdea(ideaId: number, reason: string): Promise<void>;
+  listAccounts(): Promise<PlatformAccount[]>;
+  addAccount(platform: Platform, handle: string): Promise<PlatformAccount>;
+  disconnectAccount(id: number): Promise<PlatformAccount>;
+  listDestinations(): Promise<BrandDestination[]>;
+  setDestination(platform: Platform, accountId: number | null, enabled: boolean, privacy: Privacy): Promise<BrandDestination>;
+  getBrandPresenter(): Promise<{ engine: string; voice: string }>;
+  setBrandPresenter(engine: string, voice: string): Promise<void>;
+  qaRuns(productionId: number): Promise<QaRun[]>;
+  runQa(productionId: number): Promise<void>;
+  approveProduction(productionId: number, note: string): Promise<void>;
+  rejectProduction(productionId: number, note: string): Promise<void>;
+  exportAudit(productionId: number): Promise<string>;
+  verifyAudit(): Promise<AuditVerification>;
+  auditEvents(productionId: number): Promise<AuditEvent[]>;
+  listIncidents(): Promise<Incident[]>;
+  addIncident(kind: Incident['kind'], description: string, productionId: number | null, assetKey: string): Promise<Incident>;
+  resolveIncident(id: number): Promise<void>;
+
   /** Subscribe to production changes; returns an unsubscribe function. */
   onProductionChanged(cb: (productionId: number) => void): () => void;
 }
@@ -169,5 +200,29 @@ export const IPC = {
   importSound: 'sounds:import',
   updateSound: 'sounds:update',
   deleteSound: 'sounds:delete',
+  getAutonomy: 'ops:autonomy:get',
+  saveAutonomy: 'ops:autonomy:save',
+  engineStatus: 'ops:engine:status',
+  runDiscoveryNow: 'ops:discovery:run',
+  listIdeas: 'ops:ideas:list',
+  produceIdea: 'ops:ideas:produce',
+  rejectIdea: 'ops:ideas:reject',
+  listAccounts: 'accounts:list',
+  addAccount: 'accounts:add',
+  disconnectAccount: 'accounts:disconnect',
+  listDestinations: 'destinations:list',
+  setDestination: 'destinations:set',
+  getBrandPresenter: 'brand:presenter:get',
+  setBrandPresenter: 'brand:presenter:set',
+  qaRuns: 'qa:runs',
+  runQa: 'qa:run',
+  approveProduction: 'approval:approve',
+  rejectProduction: 'approval:reject',
+  exportAudit: 'audit:export',
+  verifyAudit: 'audit:verify',
+  auditEvents: 'audit:events',
+  listIncidents: 'incidents:list',
+  addIncident: 'incidents:add',
+  resolveIncident: 'incidents:resolve',
   onProductionChanged: 'productions:changed'
 } as const satisfies Record<keyof AppApi, string>;

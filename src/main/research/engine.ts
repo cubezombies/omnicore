@@ -1,6 +1,6 @@
 import type { ResearchProviderId, Source, SourceKind } from '../../shared/production';
 import { CancelledError } from '../media/ffmpeg';
-import { fetchRetry } from '../providers/http';
+import { fetchRetry, readText } from '../providers/http';
 import { significantTokens } from '../providers/text';
 import type { ResearchAdapter, ResearchQuery } from './adapters';
 import { classifyUrl } from './classify';
@@ -101,8 +101,7 @@ async function defaultFetchPage(url: string, signal: AbortSignal): Promise<strin
   const res = await fetchRetry(url, { signal, retries: 1, timeoutMs: 15000, init: { headers: { Accept: 'text/html,application/xhtml+xml' } } });
   const type = res.headers.get('content-type') ?? '';
   if (!/html|xml/.test(type)) throw new Error(`not an HTML page (${type || 'unknown type'})`);
-  const buf = await res.arrayBuffer();
-  return Buffer.from(buf.slice(0, 3_000_000)).toString('utf8');
+  return (await readText(res)).slice(0, 3_000_000);
 }
 
 /** Fetch the page behind a feed/search hit and replace the summary with the article's own text and metadata. */

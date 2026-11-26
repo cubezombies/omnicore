@@ -82,6 +82,7 @@ export function buildClaims(topic: string, sources: Source[], mode: ProductionMo
       if (PRONOUN_START.test(text) && !(pos === 0 && src.kind === 'background')) return; // needs context we would have to invent
       if (/may refer to|disambiguation|click here|subscribe|newsletter|cookie|all rights reserved|^(image|photo|credit):|must-read|star (this|us)|^(note|tip|warning):/i.test(text)) return;
       if (!isProseSentence(text)) return;
+      if (/\b(we|our|ours|us|my)\b/i.test(text) || /\bI\b/.test(text)) return; // first person: narrating it would misattribute the speaker
       if (/^(to (run|use|install|get started|try)|set |run |install |click |see |download |clone |open |you('ll| will| can| need| should))/i.test(text)) return; // instructions, not claims
       if (/^[A-Z][a-z]+ing (how|the|a|an|new|our|why|what)\b/.test(text)) return; // subject-less fragments ("Exploring how…")
       const tok = significantTokens(text);
@@ -137,8 +138,9 @@ export function buildClaims(topic: string, sources: Source[], mode: ProductionMo
   return [...chosen].sort((a, b) => order(a) - order(b)).map((c, i) => ({ ...c, id: `C${i + 1}` }));
 }
 
-export function buildEvidenceBrief(topic: string, sources: Source[], channelNiche: string, mode: ProductionMode): Brief {
-  const claims = buildClaims(topic, sources, mode);
+/** @param maxWords total script words the narrator can say in under a minute (claims get that minus hook/outro). */
+export function buildEvidenceBrief(topic: string, sources: Source[], channelNiche: string, mode: ProductionMode, maxWords = 140): Brief {
+  const claims = buildClaims(topic, sources, mode, 6, Math.max(45, maxWords - 25));
   const words = claims.reduce((s, c) => s + wordCount(c.text), 0) + 20;
   return {
     topic,

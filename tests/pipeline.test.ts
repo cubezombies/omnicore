@@ -105,7 +105,9 @@ describe('production pipeline', () => {
     const done = repo.get(p.id);
     expect(done.error).toBeNull();
     expect(done.status).toBe('completed');
-    expect(done.steps.every((s) => s.status === 'done' && s.attempts === 1)).toBe(true);
+    expect(done.steps.every((s) => s.status === 'done')).toBe(true);
+    // Generation steps ran once; QA may legitimately repair captions/render (this fake voice only times 6 words per scene).
+    expect(done.steps.filter((s) => ['research', 'brief', 'script', 'narration', 'visuals'].includes(s.step)).every((s) => s.attempts === 1)).toBe(true);
     const out = done.outputPath!;
     const info = await probe(ffmpeg, out);
     expect(info.video).toMatchObject({ codec: 'h264', width: 1080, height: 1920 });

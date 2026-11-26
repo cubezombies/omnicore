@@ -55,6 +55,31 @@ Live research reports: `AIMO_RESEARCH_LIVE=1 AIMO_RESEARCH_OUT=<dir> npx vitest 
 
 Live end-to-end check (needs internet + Windows; Strata for the LLM writer; `AIMO_E2E_MODE=news` for news): `set AIMO_E2E=1 && npx vitest run tests/e2e.test.ts` (output kept in `.tmp\e2e`). Options: `AIMO_E2E_REQUIRE_LLM=1`, `AIMO_E2E_NARRATION=piper` (installs Piper into `AIMO_TOOLS_DIR`), `AIMO_E2E_MUSIC=auto`, `AIMO_E2E_SFX=1`, `AIMO_E2E_TOPIC=...`. Through the real app: `AIMO_SMOKE_PRODUCE="<topic>" node scripts/smoke.mjs`.
 
+## Autonomous operations (0.5)
+
+**Operations** (sidebar) runs an operating engine in the main process, independent of the window:
+
+- **Discovery** every N hours: official AI-lab newsrooms and press feeds, Hacker News (high-signal only) and Hugging Face trending. Stories covered by several outlets are clustered and scored on freshness, coverage, primary sources, niche fit and novelty. Deal and shopping posts are dropped.
+- **Idea pipeline**: scored ideas persist in SQLite. The engine starts the best one above the minimum score, within active hours and the daily limit, one production at a time. Transient failures are retried up to 3 times, 10 minutes apart.
+- **Independent QA** after rendering, covering:
+  - facts and grounding, source independence and title honesty;
+  - visual and audio rights evidence and the AI label;
+  - narration pacing and **speech-to-text intelligibility** (Whisper base.en);
+  - caption coverage and sync;
+  - video spec, duration, integrity and fast-start;
+  - loudness and true peak;
+  - per-platform metadata.
+
+  Failures trigger the most upstream automatic repair (rescript, shorten, revisuals, recaptions, rerender, metadata), then QA runs again, for up to the configured number of rounds. Passed content waits at **awaiting review**; a critical failure **blocks** it.
+- **Audit ledger**: every decision, asset, licence, script version, render and QA run is an append-only, hash-chained event. Database triggers refuse edits, and **Verify** detects tampering. Source text and licence pages are retained as content-addressed evidence in `<data dir>\evidence`. **Export audit report** writes `audit-report.md` and `.json` next to the video.
+- **Background running**: closing the window keeps the engine in the tray (when enabled). **Start with Windows** registers `Omnicore.exe --background` (installed app only). On restart, interrupted work is recorded and resumed; quitting stops the engine gracefully.
+
+Limits: it runs only while the PC is on, awake, signed in and online, with Strata and the voice tools available. This is **not** 24/7 operation.
+
+**Accounts** (sidebar) holds platform accounts, the AI, Actually destinations (each production gets explicit destinations and blockers; there's no fallback to "whichever account is connected"), the brand presenter voice (**Kokoro Heart**, which overrides the global narration setting for this brand), audit verification and rights-complaint records. OAuth connection and publishing aren't implemented yet; nothing is ever published, and no money is ever spent (`requireFinancialAuthorization` always refuses). See [docs/platform-feasibility.md](docs/platform-feasibility.md) for each platform's official capabilities and blockers.
+
+Real autonomous end-to-end check (internet, Strata, Kokoro + Whisper installed): `AIMO_E2E_AUTONOMY=1 AIMO_TOOLS_DIR=<tools> npx vitest run tests/autonomy-e2e.test.ts` (output in `.tmp\autonomy-e2e`).
+
 ## Data location
 
 All user data (SQLite database plus the Chromium profile) goes in one folder:

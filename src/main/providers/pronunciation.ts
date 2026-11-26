@@ -113,7 +113,9 @@ export function speechTokens(text: string, overrides: Pronunciation[] = []): Spe
       if (whole !== undefined && /[.]$/.test(orig)) return { orig, spoken: whole };
       const m = /^([("'“‘[]*)(.*?)([)"'”’\].,;:!?]*)$/.exec(orig)!;
       const [, lead, core, trail] = m;
-      return { orig, spoken: `${lead}${speakCore(core, exact, ci)}${trail}` };
+      // Typographic apostrophes/quotes are not in Kokoro's lexicon: "Nvidia’s" was heard as "Nvidiya Hafes".
+      const plain = (x: string) => x.replace(/[’‘ʼ]/g, "'").replace(/[“”]/g, '"');
+      return { orig, spoken: plain(`${lead}${speakCore(plain(core), exact, ci)}${trail}`) };
     });
 }
 

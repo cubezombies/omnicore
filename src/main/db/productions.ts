@@ -15,6 +15,7 @@ import {
   type Storyboard
 } from '../../shared/production';
 import { NotFoundError } from './repository';
+import type { ApprovalState, PlatformMetadata, ProductionDestination } from '../../shared/operations';
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 
@@ -35,6 +36,12 @@ interface ProductionRow {
   duration_sec: number | null;
   created_at: string;
   updated_at: string;
+  idea_id: number | null;
+  origin: 'manual' | 'autonomous';
+  destinations: string;
+  metadata: string;
+  approval: ApprovalState;
+  publish_status: string;
 }
 interface StepRow {
   step: StepName;
@@ -118,12 +125,19 @@ export class ProductionRepository {
   }
 
   // ---- productions ----------------------------------------------------
-  create(channelId: number, topic: string, contentId: number | null, userNotes: string, mode: 'explainer' | 'news' = 'explainer'): Production {
+  create(
+    channelId: number,
+    topic: string,
+    contentId: number | null,
+    userNotes: string,
+    mode: 'explainer' | 'news' = 'explainer',
+    extra: { origin?: 'manual' | 'autonomous'; ideaId?: number | null; destinations?: ProductionDestination[] } = {}
+  ): Production {
     this.db.exec('BEGIN');
     try {
       const res = this.db
-        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes, mode) VALUES (?,?,?,?,?)')
-        .run(channelId, contentId, topic, userNotes, mode);
+        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes, mode, origin, idea_id, destinations) VALUES (?,?,?,?,?,?,?,?)')
+        .run(channelId, contentId, topic, userNotes, mode, extra.origin ?? 'manual', extra.ideaId ?? null, JSON.stringify(extra.destinations ?? []));
       const id = Number(res.lastInsertRowid);
       const ins = this.db.prepare('INSERT INTO production_steps (production_id, step) VALUES (?, ?)');
       for (const s of PRODUCTION_STEPS) ins.run(id, s);
@@ -148,7 +162,13 @@ export class ProductionRepository {
   steps(id: number): ProductionStep[] {
     const rows = this.db.prepare('SELECT * FROM production_steps WHERE production_id = ?').all(id) as unknown as StepRow[];
     const byName = new Map(rows.map((r) => [r.step, toStep(r)]));
-    return PRODUCTION_STEPS.map((s) => byName.get(s)!).filter(Boolean);
+    const missing = PRODUCTION_STEPS.filter((s) => !byName.has(s));
+    if (missing.length) {
+      const ins = this.db.prepare('INSERT OR IGNORE INTO production_steps (production_id, step) VALUES (?, ?)');
+      for (const m of missing) ins.run(id, m);
+      return this.steps(id);
+    }
+    return PRODUCTION_STEPS.map((s) => byName.get(s)!);
   }
 
   assets(id: number, kind?: AssetKind): ProductionAsset[] {
@@ -173,7 +193,12 @@ export class ProductionRepository {
       costUsd: steps.reduce((sum, s) => sum + s.costUsd, 0),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
-      steps
+      steps,
+      origin: r.origin ?? 'manual',
+      ideaId: r.idea_id === null || r.idea_id === undefined ? null : Number(r.idea_id),
+      destinations: JSON.parse(r.destinations ?? '[]') as ProductionDestination[],
+      approval: r.approval ?? 'none',
+      publishStatus: r.publish_status ?? 'not_published'
     };
   }
 
@@ -184,6 +209,7 @@ export class ProductionRepository {
       sources: JSON.parse(r.sources) as Source[],
       brief: r.brief ? (JSON.parse(r.brief) as Brief) : null,
       storyboard: r.storyboard ? (JSON.parse(r.storyboard) as Storyboard) : null,
+      metadata: JSON.parse(r.metadata ?? '{}') as Record<string, PlatformMetadata>,
       assets: this.assets(id)
     };
   }
@@ -213,6 +239,10 @@ export class ProductionRepository {
       storyboard: Storyboard | null;
       outputPath: string | null;
       durationSec: number | null;
+      destinations: ProductionDestination[];
+      metadata: Record<string, PlatformMetadata>;
+      approval: ApprovalState;
+      publishStatus: string;
     }>
   ): void {
     const map: Record<string, [string, (v: unknown) => unknown]> = {
@@ -223,7 +253,11 @@ export class ProductionRepository {
       brief: ['brief', (v) => (v === null ? null : JSON.stringify(v))],
       storyboard: ['storyboard', (v) => (v === null ? null : JSON.stringify(v))],
       outputPath: ['output_path', (v) => v],
-      durationSec: ['duration_sec', (v) => v]
+      durationSec: ['duration_sec', (v) => v],
+      destinations: ['destinations', (v) => JSON.stringify(v)],
+      metadata: ['metadata', (v) => JSON.stringify(v)],
+      approval: ['approval', (v) => v],
+      publishStatus: ['publish_status', (v) => v]
     };
     const keys = Object.keys(p).filter((k) => k in map && (p as Record<string, unknown>)[k] !== undefined);
     if (!keys.length) return;

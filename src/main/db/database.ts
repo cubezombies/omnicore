@@ -111,6 +111,164 @@ const MIGRATIONS: string[] = [
   // v4: production mode (explainer / news).
   `
   ALTER TABLE productions ADD COLUMN mode TEXT NOT NULL DEFAULT 'explainer' CHECK (mode IN ('explainer','news'));
+  `,
+  // v5: autonomous operations — brands/accounts/destinations, idea pipeline, audit ledger,
+  // rights evidence, QA history, incidents, engine runs, music restrictions.
+  `
+  ALTER TABLE channels ADD COLUMN presenter_engine TEXT NOT NULL DEFAULT 'sherpa';
+  ALTER TABLE channels ADD COLUMN presenter_voice TEXT NOT NULL DEFAULT 'af_heart';
+  ALTER TABLE channels ADD COLUMN editorial TEXT NOT NULL DEFAULT '{}';
+
+  CREATE TABLE platform_accounts (
+    id               INTEGER PRIMARY KEY,
+    platform         TEXT NOT NULL CHECK (platform IN ('tiktok','youtube','instagram')),
+    handle           TEXT NOT NULL,
+    display_name     TEXT NOT NULL DEFAULT '',
+    external_id      TEXT NOT NULL DEFAULT '',
+    avatar_url       TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'not_connected'
+                     CHECK (status IN ('not_connected','connected','expired','revoked','error')),
+    scopes           TEXT NOT NULL DEFAULT '[]',
+    capabilities     TEXT NOT NULL DEFAULT '{}',
+    token_expires_at TEXT,
+    last_auth_at     TEXT,
+    last_error       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE (platform, handle)
+  );
+  -- Tokens are encrypted with the OS key store (Electron safeStorage / Windows DPAPI) before they reach the DB.
+  CREATE TABLE secure_tokens (
+    account_id  INTEGER PRIMARY KEY REFERENCES platform_accounts(id) ON DELETE CASCADE,
+    ciphertext  BLOB NOT NULL,
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE TABLE brand_destinations (
+    id          INTEGER PRIMARY KEY,
+    brand_id    INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    platform    TEXT NOT NULL CHECK (platform IN ('tiktok','youtube','instagram')),
+    account_id  INTEGER REFERENCES platform_accounts(id) ON DELETE SET NULL,
+    is_default  INTEGER NOT NULL DEFAULT 1,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    privacy     TEXT NOT NULL DEFAULT 'private' CHECK (privacy IN ('private','public','unlisted')),
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX idx_dest_brand ON brand_destinations(brand_id, platform);
+
+  CREATE TABLE ideas (
+    id             INTEGER PRIMARY KEY,
+    brand_id       INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    topic          TEXT NOT NULL,
+    headline       TEXT NOT NULL DEFAULT '',
+    mode           TEXT NOT NULL DEFAULT 'news' CHECK (mode IN ('explainer','news')),
+    signals        TEXT NOT NULL DEFAULT '[]',
+    score          REAL NOT NULL DEFAULT 0,
+    score_detail   TEXT NOT NULL DEFAULT '{}',
+    status         TEXT NOT NULL DEFAULT 'new'
+                   CHECK (status IN ('new','selected','rejected','produced','failed','expired')),
+    decision       TEXT NOT NULL DEFAULT '',
+    production_id  INTEGER REFERENCES productions(id) ON DELETE SET NULL,
+    fingerprint    TEXT NOT NULL,
+    discovered_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    decided_at     TEXT,
+    UNIQUE (brand_id, fingerprint)
+  );
+  CREATE INDEX idx_ideas_status ON ideas(brand_id, status, score);
+
+  CREATE TABLE engine_runs (
+    id           INTEGER PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','done','failed','interrupted')),
+    detail       TEXT NOT NULL DEFAULT '',
+    started_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    finished_at  TEXT
+  );
+
+  -- Append-only, hash-chained audit ledger. Updates and deletes are refused by triggers.
+  CREATE TABLE audit_events (
+    id             INTEGER PRIMARY KEY,
+    ts             TEXT NOT NULL,
+    actor          TEXT NOT NULL,
+    type           TEXT NOT NULL,
+    subject_type   TEXT NOT NULL DEFAULT '',
+    subject_id     TEXT NOT NULL DEFAULT '',
+    production_id  INTEGER,
+    data           TEXT NOT NULL DEFAULT '{}',
+    prev_hash      TEXT NOT NULL,
+    hash           TEXT NOT NULL UNIQUE
+  );
+  CREATE INDEX idx_audit_prod ON audit_events(production_id, id);
+  CREATE INDEX idx_audit_subject ON audit_events(subject_type, subject_id);
+  CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
+  CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
+
+  -- Retained evidence (licence metadata snapshots, source excerpts, script versions), content-addressed.
+  CREATE TABLE evidence (
+    sha256      TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    source_url  TEXT NOT NULL DEFAULT '',
+    media_type  TEXT NOT NULL DEFAULT 'application/json',
+    path        TEXT NOT NULL,
+    bytes       INTEGER NOT NULL,
+    retrieved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
+  CREATE TABLE qa_runs (
+    id             INTEGER PRIMARY KEY,
+    production_id  INTEGER NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+    round          INTEGER NOT NULL,
+    status         TEXT NOT NULL CHECK (status IN ('passed','failed','blocked')),
+    summary        TEXT NOT NULL DEFAULT '{}',
+    started_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    finished_at    TEXT
+  );
+  CREATE TABLE qa_findings (
+    id         INTEGER PRIMARY KEY,
+    qa_run_id  INTEGER NOT NULL REFERENCES qa_runs(id) ON DELETE CASCADE,
+    check_id   TEXT NOT NULL,
+    category   TEXT NOT NULL,
+    severity   TEXT NOT NULL CHECK (severity IN ('critical','major','minor','info')),
+    passed     INTEGER NOT NULL,
+    message    TEXT NOT NULL,
+    evidence   TEXT NOT NULL DEFAULT '{}',
+    repair     TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_qa_findings_run ON qa_findings(qa_run_id);
+
+  CREATE TABLE incidents (
+    id             INTEGER PRIMARY KEY,
+    kind           TEXT NOT NULL CHECK (kind IN ('rights_complaint','incident')),
+    production_id  INTEGER REFERENCES productions(id) ON DELETE SET NULL,
+    asset_key      TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    resolved_at    TEXT
+  );
+
+  ALTER TABLE productions ADD COLUMN idea_id INTEGER REFERENCES ideas(id) ON DELETE SET NULL;
+  ALTER TABLE productions ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual','autonomous'));
+  ALTER TABLE productions ADD COLUMN destinations TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE productions ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE productions ADD COLUMN approval TEXT NOT NULL DEFAULT 'none'
+    CHECK (approval IN ('none','awaiting_review','approved','rejected','blocked'));
+  ALTER TABLE productions ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'not_published';
+
+  -- Embedded (licensed into the file) vs platform-native (attached on the platform) audio, with restrictions.
+  ALTER TABLE audio_library ADD COLUMN usage TEXT NOT NULL DEFAULT 'embedded' CHECK (usage IN ('embedded','platform_native'));
+  ALTER TABLE audio_library ADD COLUMN commercial_use TEXT NOT NULL DEFAULT 'unknown' CHECK (commercial_use IN ('yes','no','unknown'));
+  ALTER TABLE audio_library ADD COLUMN restrictions TEXT NOT NULL DEFAULT '{}';
+  UPDATE audio_library SET commercial_use = 'yes' WHERE origin = 'generated';
+
+  -- QA becomes a pipeline step for existing productions too.
+  INSERT INTO production_steps (production_id, step) SELECT id, 'qa' FROM productions;
+  -- AI, Actually: the approved presenter (Kokoro Heart) and editorial focus; default destinations (not yet connected).
+  UPDATE channels SET presenter_engine = 'sherpa', presenter_voice = 'af_heart',
+    editorial = '{"keywords":["AI","artificial intelligence","LLM","language model","OpenAI","Anthropic","Google","DeepMind","NVIDIA","GPU","chip","model","agent","robot","machine learning","Meta","Microsoft","Apple","regulation","AI Act"]}'
+    WHERE slug = 'ai-actually';
+  INSERT INTO brand_destinations (brand_id, platform, is_default, enabled, privacy)
+    SELECT id, p.platform, 1, CASE p.platform WHEN 'tiktok' THEN 1 ELSE 0 END, 'private'
+    FROM channels, (SELECT 'tiktok' AS platform UNION ALL SELECT 'youtube' UNION ALL SELECT 'instagram') p
+    WHERE slug = 'ai-actually';
   `
 ];
 

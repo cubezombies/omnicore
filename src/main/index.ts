@@ -1,4 +1,10 @@
-import { app, BrowserWindow, dialog, net, protocol, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, net, protocol, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { AuditLedger } from './audit/ledger';
+import { defaultDiscoverySources, discover } from './autonomy/discovery';
+import { OperatingEngine } from './autonomy/engine';
+import { OperationsRepository } from './db/operations';
+import { SherpaWhisper } from './qa/asr';
+import type { AutonomySettings } from '../shared/operations';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,7 +16,7 @@ import { Repository } from './db/repository';
 import { resolveFfmpeg } from './media/ffmpeg';
 import { ProductionRunner } from './pipeline/runner';
 import { buildProviders } from './providers/registry';
-import { registerIpc } from './ipc';
+import { onAutonomySettingsChanged, registerIpc } from './ipc';
 import { SoundLibrary } from './library';
 import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath, resolveSamplePath } from './paths';
 
@@ -46,6 +52,11 @@ protocol.registerSchemesAsPrivileged([
 const DEV_URL = process.env.ELECTRON_RENDERER_URL; // set by electron-vite in dev only
 const RENDERER_FILE = path.join(__dirname, '../renderer/index.html');
 const SMOKE = process.env.AIMO_SMOKE === '1';
+/** Started by Windows at login (or with --background): run the engine without opening a window. */
+const BACKGROUND = process.argv.includes('--background');
+let keepInTray = false;
+let quitting = false;
+let tray: Tray | null = null;
 
 let mainWindow: BrowserWindow | null = null;
 /** webContents id of our app page; the only renderer allowed to call IPC. */
@@ -115,6 +126,12 @@ function createWindow(): void {
   mainWindow.once('ready-to-show', () => {
     if (!SMOKE) mainWindow?.show();
   });
+  mainWindow.on('close', (e) => {
+    if (keepInTray && !quitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -151,7 +168,7 @@ function runSmoke(win: BrowserWindow): void {
       clearTimeout(timer);
       console.log(`SMOKE RESULT ${JSON.stringify(result)}`);
       const ok =
-        result.nav.length === 6 && result.channel.includes("AI, Actually") && !result.hasNode && result.hasApi && !result.err;
+        result.nav.length === 8 && result.channel.includes("AI, Actually") && !result.hasNode && result.hasApi && !result.err;
       if (!ok) return fail('unexpected renderer state');
       const shotDir = process.env.AIMO_SMOKE_SHOT; // optional: capture UI screenshots for review
       if (shotDir) {
@@ -226,8 +243,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
-    }
+    } else createWindow();
   });
 
   void app.whenReady().then(() => {
@@ -244,7 +262,12 @@ if (!app.requestSingleInstanceLock()) {
     const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath));
     fs.mkdirSync(productionsDir, { recursive: true });
     productions.markInterrupted();
+    const ops = new OperationsRepository(db);
+    const audit = new AuditLedger(db, path.join(dataDir, 'evidence'));
     const runner = new ProductionRunner({
+      ops,
+      audit,
+      asr: new SherpaWhisper(dirs.toolsDir),
       repo: productions,
       productionsDir,
       settings: () => productions.getSettings(),
@@ -269,15 +292,63 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
     const samplesDir = path.join(dataDir, 'samples');
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, isTrustedSender });
+    const engine = new OperatingEngine({
+      ops,
+      productions,
+      runner,
+      audit,
+      discover: (_brandId, keywords, recent, signal) => discover(defaultDiscoverySources(), keywords, recent, signal),
+      onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
+    });
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, isTrustedSender });
     registerMediaProtocol(productionsDir, library.dir, samplesDir);
+
+    const applyAutonomy = (a: AutonomySettings) => {
+      keepInTray = a.keepRunningInTray && (a.enabled || BACKGROUND);
+      if (a.enabled) engine.start();
+      else void engine.stop('disabled by user');
+      // Registering a login item only makes sense for the installed app (dev would register electron.exe).
+      if (app.isPackaged && !SMOKE) app.setLoginItemSettings({ openAtLogin: a.runAtStartup, args: ['--background'] });
+      if (keepInTray && !tray) {
+        tray = new Tray(nativeImage.createFromPath(process.execPath).resize({ width: 16, height: 16 }));
+        tray.setToolTip('Omnicore');
+        tray.on('click', () => (mainWindow ? (mainWindow.show(), mainWindow.focus()) : createWindow()));
+      }
+      if (tray) {
+        tray.setContextMenu(
+          Menu.buildFromTemplate([
+            { label: 'Open Omnicore', click: () => (mainWindow ? (mainWindow.show(), mainWindow.focus()) : createWindow()) },
+            { label: engine.isRunning() ? 'Autonomy: running' : 'Autonomy: paused', enabled: false },
+            { label: 'Run discovery now', click: () => void engine.tick(true) },
+            { type: 'separator' },
+            { label: 'Quit Omnicore', click: () => ((quitting = true), app.quit()) }
+          ])
+        );
+        if (!keepInTray) (tray.destroy(), (tray = null));
+      }
+    };
+    onAutonomySettingsChanged(applyAutonomy);
+    applyAutonomy(ops.getAutonomy());
+
+    // Graceful shutdown: stop the engine, let an autonomous production record its interruption, then close the DB.
+    let closing = false;
+    app.on('before-quit', (e) => {
+      quitting = true;
+      if (closing) return;
+      closing = true;
+      e.preventDefault();
+      void engine.stop('application quit').finally(() => setTimeout(() => app.quit(), 300));
+    });
     app.on('will-quit', () => db.close());
 
-    createWindow();
+    if (!BACKGROUND) createWindow();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
   });
 
-  app.on('window-all-closed', () => app.quit());
+  // With autonomy running in the tray, closing the window does not quit.
+  app.on('window-all-closed', () => {
+    if (!keepInTray) app.quit();
+  });
 }

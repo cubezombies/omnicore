@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { PLATFORMS, type AutonomySettings, type Platform, type Privacy } from '../shared/operations';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
 import {
   KOKORO_VOICES,
@@ -192,6 +193,10 @@ export function trackPatch(v: unknown): AudioTrackPatch {
   if (o.license !== undefined) p.license = str(o.license, 'Licence', 300);
   if (o.attribution !== undefined) p.attribution = str(o.attribution, 'Attribution', 500);
   if (o.sourceUrl !== undefined) p.sourceUrl = o.sourceUrl === '' ? '' : httpUrl(o.sourceUrl, 'Source URL');
+  if (o.commercialUse !== undefined) {
+    if (!['yes', 'no', 'unknown'].includes(o.commercialUse as string)) throw new ValidationError('Commercial use must be yes, no or unknown');
+    p.commercialUse = o.commercialUse as AudioTrackPatch['commercialUse'];
+  }
   if (o.tags !== undefined) {
     if (!Array.isArray(o.tags) || o.tags.length > 20) throw new ValidationError('Tags must be a list');
     p.tags = o.tags.map((t) => str(t, 'Tag', 40).toLowerCase()).filter(Boolean);
@@ -208,4 +213,59 @@ export function pronunciations(v: unknown): Pronunciation[] {
     if (!term || !say) throw new ValidationError('Each pronunciation needs a term and how to say it');
     return { term, say };
   });
+}
+
+// ---- 0.5 operations ---------------------------------------------------------
+
+export function platform(v: unknown): Platform {
+  if (!(PLATFORMS as readonly unknown[]).includes(v)) throw new ValidationError('Unknown platform');
+  return v as Platform;
+}
+export function privacy(v: unknown): Privacy {
+  if (v !== 'private' && v !== 'public' && v !== 'unlisted') throw new ValidationError('Privacy must be private, public or unlisted');
+  return v;
+}
+export function bool(v: unknown): boolean {
+  if (typeof v !== 'boolean') throw new ValidationError('Expected true or false');
+  return v;
+}
+export function handle(v: unknown): string {
+  const h = str(v, 'Handle', 80).replace(/^@/, '');
+  if (!/^[A-Za-z0-9._-]{2,60}$/.test(h)) throw new ValidationError('Handle may contain letters, numbers, dots, underscores and dashes');
+  return h;
+}
+export function shortText(v: unknown, name: string, max: number): string {
+  return str(v ?? '', name, max);
+}
+export function incidentKind(v: unknown): 'rights_complaint' | 'incident' {
+  if (v !== 'rights_complaint' && v !== 'incident') throw new ValidationError('Unknown incident kind');
+  return v;
+}
+export function presenter(engine: unknown, voice: unknown): { engine: string; voice: string } {
+  if (engine === 'sherpa') {
+    if (!KOKORO_VOICES.some((k) => k.id === voice)) throw new ValidationError('Unknown Kokoro voice');
+    return { engine, voice: voice as string };
+  }
+  if (engine === 'windows-sapi') return { engine, voice: str(voice, 'Voice', 200) };
+  if (engine === 'global') return { engine, voice: '' };
+  throw new ValidationError('Unknown presenter engine');
+}
+export function autonomy(v: unknown): AutonomySettings {
+  const o = object(v, 'autonomy');
+  const b = (k: string) => {
+    if (typeof o[k] !== 'boolean') throw new ValidationError(`${k} must be true or false`);
+    return o[k] as boolean;
+  };
+  return {
+    enabled: b('enabled'),
+    runAtStartup: b('runAtStartup'),
+    keepRunningInTray: b('keepRunningInTray'),
+    discoveryEveryHours: num(o.discoveryEveryHours, 'Discovery interval', 1, 168),
+    maxProductionsPerDay: Math.round(num(o.maxProductionsPerDay, 'Productions per day', 0, 24)),
+    activeFromHour: Math.round(num(o.activeFromHour, 'Start hour', 0, 23)),
+    activeToHour: Math.round(num(o.activeToHour, 'End hour', 0, 24)),
+    minIdeaScore: Math.round(num(o.minIdeaScore, 'Minimum score', 0, 100)),
+    maxIdeasKept: Math.round(num(o.maxIdeasKept, 'Ideas kept', 5, 500)),
+    maxRepairRounds: Math.round(num(o.maxRepairRounds, 'Repair rounds', 0, 5))
+  };
 }

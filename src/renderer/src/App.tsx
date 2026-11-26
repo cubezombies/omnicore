@@ -7,13 +7,17 @@ import { Studio } from './pages/Studio';
 import { Library } from './pages/Library';
 import { Business } from './pages/Business';
 import { SoundLibraryPage } from './pages/SoundLibrary';
+import { Operations } from './pages/Operations';
+import { Accounts } from './pages/Accounts';
 
 const PAGES = [
   { key: 'dashboard', label: 'Dashboard' },
+  { key: 'operations', label: 'Operations' },
   { key: 'research', label: 'Research' },
   { key: 'studio', label: 'Studio' },
   { key: 'library', label: 'Content Library' },
   { key: 'sounds', label: 'Sound Library' },
+  { key: 'accounts', label: 'Accounts' },
   { key: 'business', label: 'Business' }
 ] as const;
 export type PageKey = (typeof PAGES)[number]['key'];
@@ -93,6 +97,8 @@ export function App() {
         {props && page === 'studio' && <Studio {...props} />}
         {props && page === 'library' && <Library {...props} />}
         {props && page === 'sounds' && <SoundLibraryPage />}
+        {props && page === 'operations' && <Operations />}
+        {props && page === 'accounts' && <Accounts />}
         {props && page === 'business' && <Business {...props} />}
       </main>
 

@@ -18,6 +18,16 @@ import { AI_GENERATED_LABEL, verifyVisualAssets } from '../media/assetPolicy';
 import { notesSource } from '../providers/research';
 import { ProviderUnavailableError, type NarrationProvider, type Providers } from '../providers/types';
 import { buildEvidenceBrief } from '../research/evidence';
+import { createHash } from 'node:crypto';
+import type { AuditLedger } from '../audit/ledger';
+import type { OperationsRepository } from '../db/operations';
+import { buildMetadata } from '../publishing/metadata';
+import type { Transcriber } from '../qa/asr';
+import { runQaChecks, summarise, type RepairAction } from '../qa/engine';
+import { effectiveWordsPerSec } from '../providers/registry';
+import { maxWordsForVoice } from '../providers/writers';
+import type { PlatformMetadata } from '../../shared/operations';
+import type { KokoroVoiceId } from '../../shared/production';
 import { runResearch, type EngineOptions } from '../research/engine';
 import type { RawSource } from '../research/dedupe';
 import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS } from '../../shared/production';
@@ -34,6 +44,10 @@ export interface RunnerDeps {
   library?: SoundLibrary;
   /** Called after the script step (e.g. to copy the script into the linked content item). */
   onScript?: (productionId: number, storyboard: Storyboard) => void;
+  /** 0.5: brands/destinations, audit ledger, independent speech recognition for QA. */
+  ops?: OperationsRepository;
+  audit?: AuditLedger;
+  asr?: Transcriber;
   /** Test seam for research article fetching. */
   fetchPage?: EngineOptions['fetchPage'];
   /** Test seam: replaces the FFmpeg render call. */
@@ -58,6 +72,8 @@ interface Ctx {
   signal: AbortSignal;
   progress: (fraction: number, detail?: string) => void;
   cost: (usd: number) => void;
+  /** Script budget multiplier (QA "shorten" repairs lower it). */
+  budgetScale: number;
 }
 
 /** Scene durations/offsets derived from narration, shared by captions and render so they stay in sync. */
@@ -85,7 +101,12 @@ export class ProductionRunner {
     return path.join(this.d.productionsDir, String(id));
   }
 
-  isActive(id: number): boolean {
+  /** True while a production is running or waiting in the queue. */
+  busy(): boolean {
+    return !!this.active || this.kicking || this.d.repo.queued().length > 0;
+  }
+
+    isActive(id: number): boolean {
     return this.active?.id === id;
   }
 
@@ -182,8 +203,9 @@ export class ProductionRunner {
     this.d.emit(id);
     let current: StepName | null = null;
     try {
-      const settings = this.d.settings();
+      const settings = this.brandSettings(repo.get(id).channelId);
       const providers = this.d.providers(settings);
+      this.audit({ type: 'production.started', productionId: id, data: { narration: settings.narration, voice: settings.narration === 'sherpa' ? settings.sherpaVoice : settings.narration === 'piper' ? settings.piperVoice : settings.voice, writer: settings.writer, visuals: settings.visuals, musicMode: settings.musicMode, research: settings.researchProviders } });
       for (const step of PRODUCTION_STEPS) {
         if (repo.steps(id).find((s) => s.step === step)?.status === 'done') continue;
         current = step;
@@ -200,7 +222,8 @@ export class ProductionRunner {
             repo.updateStep(id, step, { progress: fraction, ...(detail !== undefined ? { detail } : {}) });
             this.emitThrottled(id);
           },
-          cost: (usd) => usd && repo.updateStep(id, step, { addCostUsd: usd })
+          cost: (usd) => usd && repo.updateStep(id, step, { addCostUsd: usd }),
+          budgetScale: 1
         };
         await this.steps[step](ctx);
         if (ctrl.signal.aborted) throw new CancelledError();
@@ -208,6 +231,7 @@ export class ProductionRunner {
         this.emitThrottled(id, true);
       }
       repo.update(id, { status: 'completed', currentStep: null });
+      this.audit({ type: 'production.completed', productionId: id, data: { approval: repo.get(id).approval } });
     } catch (e) {
       const cancelled = e instanceof CancelledError || ctrl.signal.aborted;
       const msg = cancelled ? 'Cancelled.' : errMsg(e);
@@ -216,6 +240,7 @@ export class ProductionRunner {
         status: cancelled ? 'cancelled' : 'failed',
         error: cancelled ? 'Cancelled. Retry to resume.' : `${current ? STEP_LABELS[current] : 'Setup'}: ${msg}`
       });
+      this.audit({ type: cancelled ? 'production.cancelled' : 'production.failed', productionId: id, data: { step: current, error: msg } });
     } finally {
       this.active = null;
       this.d.emit(id);
@@ -242,6 +267,17 @@ export class ProductionRunner {
         );
       }
       this.d.repo.update(c.id, { sources: result.sources });
+      this.audit({
+        type: 'research.completed',
+        productionId: c.id,
+        data: {
+          topic: p.topic,
+          mode: p.mode,
+          providers: result.reports.map((r) => ({ id: r.id, status: r.status, found: r.found, error: r.error })),
+          dropped: result.dropped.length,
+          sources: result.sources.map((s) => ({ id: s.id, url: s.url, publisher: s.publisher, kind: s.kind, publishedAt: s.publishedAt, group: s.group, derivedFrom: s.derivedFrom, evidence: this.retain('source-text', JSON.stringify({ url: s.url, title: s.title, excerpt: s.excerpt, retrievedAt: s.retrievedAt }), s.url) }))
+        }
+      });
       const kinds = new Map<string, number>();
       for (const s of result.sources) kinds.set(SOURCE_KIND_LABELS[s.kind ?? 'other'], (kinds.get(SOURCE_KIND_LABELS[s.kind ?? 'other']) ?? 0) + 1);
       const answered = result.reports.filter((r) => r.status !== 'failed' && r.id !== 'notes').length;
@@ -253,8 +289,10 @@ export class ProductionRunner {
 
     brief: async (c) => {
       const p = this.d.repo.get(c.id);
-      const brief = buildEvidenceBrief(p.topic, p.sources, this.d.channel(p.channelId).niche, p.mode);
+      const maxWords = Math.round(maxWordsForVoice(effectiveWordsPerSec(c.settings)) * c.budgetScale);
+      const brief = buildEvidenceBrief(p.topic, p.sources, this.d.channel(p.channelId).niche, p.mode, maxWords);
       this.d.repo.update(c.id, { brief });
+      this.audit({ type: 'evidence.claims', productionId: c.id, data: { maxWords, claims: (brief.claims ?? []).map((cl) => ({ id: cl.id, kind: cl.kind, sources: cl.sourceIds, independent: cl.independentSources, attribution: cl.attribution })) } });
       const kinds = new Map<string, number>();
       for (const cl of brief.claims ?? []) kinds.set(CLAIM_KIND_LABELS[cl.kind], (kinds.get(CLAIM_KIND_LABELS[cl.kind]) ?? 0) + 1);
       c.progress(1, `${brief.claims?.length ?? 0} evidence claims (${[...kinds].map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ')}) · ~${brief.targetSeconds}s`);
@@ -280,6 +318,7 @@ export class ProductionRunner {
         storyboard.writer = `${storyboard.writer} (fallback)`;
       }
       this.d.repo.update(c.id, { storyboard });
+      this.audit({ type: 'script.version', productionId: c.id, data: { writer: storyboard.writer, fallbackReason: storyboard.fallbackReason, scenes: storyboard.scenes.length, words: storyboard.scenes.reduce((n, s) => n + s.narration.split(/\s+/).length, 0), evidence: this.retain('script', JSON.stringify(storyboard)) } });
       this.d.onScript?.(c.id, storyboard);
       c.progress(1, `${storyboard.scenes.length} scenes · ${storyboard.writer}${storyboard.fallbackReason ? ` · ${storyboard.fallbackReason}` : ''}`);
     },
@@ -319,6 +358,7 @@ export class ProductionRunner {
         });
       }
       const total = this.d.repo.assets(c.id, 'narration').reduce((s, a) => s + Number(a.meta.durationSec), 0);
+      this.audit({ type: 'narration.completed', productionId: c.id, data: { provider: n.id, voice: this.d.repo.assets(c.id, 'narration')[0]?.meta.voice, seconds: +total.toFixed(2), fallback: fallbackNote || undefined } });
       c.progress(1, `${scenes.length} clips · ${total.toFixed(1)}s · ${n.label}${total > 62 ? ' · over 60 s: shorten the script rather than speeding up the voice' : ''}${fallbackNote}`);
     },
 
@@ -348,6 +388,10 @@ export class ProductionRunner {
             }
             c.cost(v.costPerUnitUsd);
             used.add(r.key);
+            const lic = r.meta?.licenseRecord as Record<string, unknown> | undefined;
+            const evidenceHash = lic ? this.retain('licence-record', JSON.stringify({ key: r.key, ...lic }), r.sourceUrl) : undefined;
+            const fileHash = createHash('sha256').update(fs.readFileSync(r.file)).digest('hex');
+            this.audit({ type: 'asset.visual', productionId: c.id, subjectType: 'asset', subjectId: r.key, data: { scene: sc.index + 1, provider: v.id, key: r.key, sourceUrl: r.sourceUrl, license: r.license, attribution: r.attribution, sha256: fileHash, licenceEvidence: evidenceHash, aiGenerated: !!r.meta?.aiGenerated } });
             this.d.repo.addAsset(c.id, {
               kind: 'image',
               sceneIndex: sc.index,
@@ -356,7 +400,7 @@ export class ProductionRunner {
               sourceUrl: r.sourceUrl,
               license: r.license,
               attribution: r.attribution,
-              meta: { ...r.meta, key: r.key }
+              meta: { ...r.meta, key: r.key, sha256: fileHash, ...(evidenceHash ? { evidenceHash } : {}) }
             });
             done = true;
             break;
@@ -413,7 +457,7 @@ export class ProductionRunner {
       this.removeAssets(c.id, 'sfx');
       if (this.d.library && (c.settings.musicMode !== 'none' || c.settings.sfxTransitions)) {
         const lib = this.d.library;
-        const { music, sfx } = await lib.pick(c.settings, c.id, c.signal);
+        const { music, sfx } = await lib.pick(c.settings, c.id, c.signal, this.d.repo.get(c.id).mode === 'news' ? 'upbeat' : 'calm');
         if (music) plan.music = { path: lib.pathOf(music), volume: c.settings.musicVolume };
         if (sfx) plan.sfx = { path: lib.pathOf(sfx), volume: c.settings.sfxVolume, atSec: transitionTimes(plan) };
         for (const t of [music, sfx]) {
@@ -426,7 +470,7 @@ export class ProductionRunner {
             sourceUrl: t.sourceUrl,
             license: t.license,
             attribution: `${t.title}${t.attribution ? ` by ${t.attribution}` : ''}${t.license ? `, ${t.license}` : ''}`,
-            meta: { trackId: t.id }
+            meta: { trackId: t.id, usage: t.usage, commercialUse: t.commercialUse, licenceEvidence: this.retain('audio-licence', JSON.stringify({ title: t.title, license: t.license, attribution: t.attribution, sourceUrl: t.sourceUrl, origin: t.origin, usage: t.usage, commercialUse: t.commercialUse, restrictions: t.restrictions })) }
           });
         }
       }
@@ -453,9 +497,87 @@ export class ProductionRunner {
       this.d.repo.addAsset(c.id, { kind: 'video', sceneIndex: null, path: finalRel, provider: 'ffmpeg', meta: { ...info } });
       this.d.repo.addAsset(c.id, { kind: 'credits', sceneIndex: null, path: 'credits.txt', provider: 'omnicore' });
       this.d.repo.update(c.id, { outputPath: path.join(c.dir, finalRel), durationSec: info.durationSec });
+      for (const a of this.d.repo.assets(c.id).filter((x) => x.kind === 'music' || x.kind === 'sfx')) {
+        this.audit({ type: 'asset.audio', productionId: c.id, subjectType: 'asset', subjectId: a.path, data: { kind: a.kind, license: a.license, attribution: a.attribution, usage: a.meta.usage, commercialUse: a.meta.commercialUse, licenceEvidence: a.meta.licenceEvidence } });
+      }
+      this.audit({ type: 'render.output', productionId: c.id, data: { file: finalRel, sha256: createHash('sha256').update(fs.readFileSync(path.join(c.dir, finalRel))).digest('hex'), durationSec: info.durationSec, width: info.video?.width, height: info.video?.height } });
       c.progress(1, `${info.durationSec.toFixed(1)}s · ${info.video.width}×${info.video.height} · ${info.video.codec}/${info.audio.codec}`);
+    },
+
+    qa: async (c) => {
+      const maxRounds = this.d.ops?.getAutonomy().maxRepairRounds ?? 2;
+      const done: string[] = [];
+      const plan: Record<RepairAction, StepName[]> = {
+        rescript: ['script', 'narration', 'visuals', 'captions', 'render'],
+        shorten: ['brief', 'script', 'narration', 'visuals', 'captions', 'render'],
+        revisuals: ['visuals', 'captions', 'render'],
+        recaptions: ['captions', 'render'],
+        rerender: ['render'],
+        metadata: []
+      };
+      for (let round = 1; ; round++) {
+        this.refreshPublishing(c);
+        c.progress(Math.min(0.9, round * 0.3), `QA round ${round}: inspecting…`);
+        const p = this.d.repo.get(c.id);
+        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal });
+        const sum = summarise(results);
+        const repairs = [...new Set(results.filter((r) => !r.passed && r.repairAction && (r.severity === 'critical' || r.severity === 'major')).map((r) => r.repairAction!))];
+        const canRepair = repairs.length > 0 && round <= maxRounds;
+        this.d.ops?.saveQaRun(c.id, round, sum.status, { critical: sum.critical, major: sum.major, minor: sum.minor, checks: results.length, repairs: canRepair ? repairs : [] }, results);
+        this.audit({ type: 'qa.run', productionId: c.id, data: { round, status: sum.status, critical: sum.critical, major: sum.major, minor: sum.minor, failed: results.filter((r) => !r.passed).map((r) => `${r.severity}:${r.checkId}`), repairs: canRepair ? repairs : [] } });
+        if (sum.status === 'passed' || !canRepair) {
+          const approval = sum.status === 'blocked' ? 'blocked' : 'awaiting_review';
+          this.d.repo.update(c.id, { approval });
+          this.audit({ type: 'publishing.readiness', productionId: c.id, data: { approval, destinations: this.d.repo.get(c.id).destinations } });
+          c.progress(1, `${sum.status === 'passed' ? 'Passed' : sum.status === 'blocked' ? 'BLOCKED (critical failures)' : 'Issues need review'} · ${results.length} checks · ${sum.critical} critical, ${sum.major} major, ${sum.minor} minor${done.length ? ` · repaired: ${done.join(', ')}` : ''}`);
+          return;
+        }
+        // Automatic repair: the most upstream action covers the others.
+        const order: RepairAction[] = ['shorten', 'rescript', 'revisuals', 'recaptions', 'rerender', 'metadata'];
+        const action = order.find((a) => repairs.includes(a))!;
+        c.progress(Math.min(0.9, round * 0.3), `QA round ${round}: repairing (${action})…`);
+        if (action === 'shorten') c.budgetScale *= 0.8;
+        for (const step of plan[action]) await this.rerunInline(c, step);
+        done.push(action);
+        this.audit({ type: 'qa.repair', productionId: c.id, data: { round, action, steps: plan[action] } });
+      }
     }
   };
+
+  /** Brand presenter (e.g. AI, Actually → Kokoro Heart) overrides the global narration settings for that brand's productions. */
+  private brandSettings(channelId: number): ProviderSettings {
+    const s = this.d.settings();
+    if (!this.d.ops) return s;
+    const pres = this.d.ops.brandPresenter(channelId);
+    if (pres.engine === 'sherpa') return { ...s, narration: 'sherpa', sherpaVoice: pres.voice as KokoroVoiceId };
+    if (pres.engine === 'windows-sapi') return { ...s, narration: 'windows-sapi', voice: pres.voice };
+    return s;
+  }
+
+  private audit(e: { type: string; productionId?: number; subjectType?: string; subjectId?: string; data?: Record<string, unknown> }): void {
+    this.d.audit?.record({ actor: 'pipeline', ...e });
+  }
+
+  private retain(kind: string, content: string, url = ''): string | undefined {
+    return this.d.audit?.retain(kind, content, url);
+  }
+
+  /** Re-run one step inside the current run (used by QA repairs). */
+  private async rerunInline(c: Ctx, step: StepName): Promise<void> {
+    for (const kind of STEP_ASSETS[step] ?? []) this.removeAssets(c.id, kind);
+    this.d.repo.updateStep(c.id, step, { status: 'running', progress: 0, error: null, incrementAttempts: true, started: true });
+    await this.steps[step]({ ...c, progress: (f, d) => this.d.repo.updateStep(c.id, step, { progress: f, ...(d !== undefined ? { detail: d } : {}) }) });
+    this.d.repo.updateStep(c.id, step, { status: 'done', progress: 1, finished: true });
+  }
+
+  private refreshPublishing(c: Ctx): void {
+    const p = this.d.repo.get(c.id);
+    const destinations = this.d.ops ? (p.destinations.length ? this.d.ops.resolveDestinations(p.channelId, p.destinations.map((d) => ({ platform: d.platform, accountId: d.accountId }))) : this.d.ops.resolveDestinations(p.channelId)) : p.destinations;
+    const credits = fs.existsSync(path.join(c.dir, 'credits.txt')) ? fs.readFileSync(path.join(c.dir, 'credits.txt'), 'utf8') : this.credits(c.id);
+    const metadata: Record<string, PlatformMetadata> = {};
+    for (const d of destinations) metadata[d.platform] = buildMetadata({ ...p, destinations }, d, credits, this.d.channel(p.channelId).name);
+    this.d.repo.update(c.id, { destinations, metadata });
+  }
 
   /** Description-ready credits: sources, image licences, voice. Required for CC-BY images. */
   credits(id: number): string {

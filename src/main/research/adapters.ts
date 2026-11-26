@@ -1,6 +1,6 @@
 import type { ProductionMode, ProviderStatus, ResearchCategory, ResearchProviderId } from '../../shared/production';
 import { CancelledError } from '../media/ffmpeg';
-import { fetchJson, fetchRetry } from '../providers/http';
+import { fetchJson, fetchRetry, readText } from '../providers/http';
 import { searchTerms } from '../providers/text';
 import { classifyUrl } from './classify';
 import type { RawSource } from './dedupe';
@@ -365,7 +365,7 @@ const feedAdapter = (id: ResearchProviderId, label: string, feeds: FeedDef[]): R
   healthUrl: feeds[0].url,
   async search(q, signal) {
     const results = await Promise.allSettled(
-      feeds.map(async (f) => feedItemsToSources(await (await fetchRetry(f.url, { signal, retries: 1, timeoutMs: 20000 })).text(), f, q, id))
+      feeds.map(async (f) => feedItemsToSources(await readText(await fetchRetry(f.url, { signal, retries: 1, timeoutMs: 20000 })), f, q, id))
     );
     if (signal.aborted) throw new CancelledError();
     const ok = results.filter((r): r is PromiseFulfilledResult<RawSource[]> => r.status === 'fulfilled');
