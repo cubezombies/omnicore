@@ -1,4 +1,4 @@
-# AI Media Operations
+# Omnicore
 
 Windows desktop app for running an AI-produced media business. First channel: **AI, Actually** (AI and technology; TikTok → YouTube Shorts → Instagram Reels).
 
@@ -11,7 +11,7 @@ scripts\dev.cmd            :: hot-reload dev (installs deps on first run)
 scripts\dev.cmd preview    :: run the production build
 ```
 
-`dev.cmd` keeps temp files, npm/Electron caches and app data on `F:`. The dev data directory is `F:\Claude\AI Media Operations\data-dev` unless `AIMO_DATA_DIR` is already set.
+`dev.cmd` keeps temp files, npm/Electron caches and app data on `F:`. The dev data directory is `F:\Claude\AI Media Operations\data-dev` (override with `AIMO_DEV_DATA_DIR`); it never uses the installed app's `AIMO_DATA_DIR`.
 
 | Command | What it does |
 |---|---|
@@ -19,7 +19,7 @@ scripts\dev.cmd preview    :: run the production build
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run smoke` | Builds, launches the real Electron app headless against a throwaway data dir, checks sandboxing + IPC + DB |
 | `npm run pack` | Unpacked app in `release\win-unpacked` |
-| `npm run dist` | NSIS installer in `release\` (unsigned) |
+| `npm run dist` | NSIS installer `release\Omnicore-Setup-<version>.exe` (unsigned) |
 
 Set `TMP`/`TEMP` to an `F:` folder before running `npm run dist` by hand (`dev.cmd` does this).
 
@@ -50,9 +50,9 @@ Live end-to-end check (needs internet + Windows; Strata for the LLM writer): `se
 All user data (SQLite database plus the Chromium profile) goes in one folder:
 
 1. `AIMO_DATA_DIR`, if set
-2. otherwise Electron's per-user default (`%APPDATA%\AI Media Operations`)
+2. otherwise Electron's per-user default (`%APPDATA%\Omnicore`)
 
-The app will not start with a data dir inside the installation directory, and uninstalling never deletes data. To keep an installed copy's data off `C:`, set a user environment variable once, for example `setx AIMO_DATA_DIR "F:\Claude\AI Media Operations\data"`.
+The app will not start with a data dir inside the installation directory, and uninstalling never deletes data. To keep an installed copy's data off `C:`, set a user environment variable once, for example `setx AIMO_DATA_DIR "F:\Projects\AIMediaOperations\data"` (this machine's setting).
 
 ## Layout
 

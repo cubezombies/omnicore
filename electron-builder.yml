@@ -1,6 +1,6 @@
-appId: com.aimediaoperations.app
-productName: AI Media Operations
-copyright: Copyright © 2026
+appId: com.cubezombies.omnicore
+productName: Omnicore
+copyright: Copyright © 2026 cubezombies
 directories:
   output: release
   buildResources: build
@@ -13,6 +13,7 @@ asar: true
 asarUnpack:
   - node_modules/ffmpeg-static/**
 win:
+  icon: build/icon.png
   target:
     - target: nsis
       arch: [x64]
@@ -23,5 +24,7 @@ nsis:
   # User data lives outside the install dir; never wipe it on uninstall.
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
-  shortcutName: AI Media Operations
+  shortcutName: Omnicore
+  createStartMenuShortcut: true
+  artifactName: Omnicore-Setup-${version}.exe
 publish: null

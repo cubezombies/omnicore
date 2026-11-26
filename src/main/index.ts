@@ -29,7 +29,7 @@ function prepareDataDir(): string {
   } catch (e) {
     const msg = `${e instanceof Error ? e.message : String(e)}\n\nSet ${DATA_DIR_ENV} to a writable folder outside the installation directory.`;
     console.error(msg);
-    dialog.showErrorBox('AI Media Operations cannot start', msg);
+    dialog.showErrorBox('Omnicore cannot start', msg);
     app.exit(1);
     throw e;
   }
@@ -84,7 +84,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     backgroundColor: '#0b1120',
-    title: 'AI Media Operations',
+    title: 'Omnicore',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),

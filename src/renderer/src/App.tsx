@@ -55,7 +55,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
-          <span>AI Media Ops</span>
+          <span>Omnicore</span>
         </div>
         <label className="channel-picker">
           <span className="label">Channel</span>

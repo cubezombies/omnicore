@@ -5,7 +5,8 @@ rem        scripts\dev.cmd preview    (run the production build)
 setlocal
 cd /d "%~dp0.."
 
-if not defined AIMO_DATA_DIR set "AIMO_DATA_DIR=F:\Claude\AI Media Operations\data-dev"
+rem Dev always uses its own data folder, never the installed app's (AIMO_DATA_DIR may be set for the installed app).
+if defined AIMO_DEV_DATA_DIR (set "AIMO_DATA_DIR=%AIMO_DEV_DATA_DIR%") else (set "AIMO_DATA_DIR=F:\Claude\AI Media Operations\data-dev")
 set "TMP=F:\Claude\tmp"
 set "TEMP=F:\Claude\tmp"
 set "npm_config_cache=F:\npm\cache"
