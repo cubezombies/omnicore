@@ -1,0 +1,109 @@
+// Shared domain model: used by main (authoritative) and renderer (display).
+
+export const STAGES = ['idea', 'research', 'script', 'production', 'review', 'published'] as const;
+export type Stage = (typeof STAGES)[number];
+
+export const STAGE_LABELS: Record<Stage, string> = {
+  idea: 'Idea',
+  research: 'Research',
+  script: 'Script',
+  production: 'Production',
+  review: 'Review',
+  published: 'Published'
+};
+
+export interface Channel {
+  id: number;
+  name: string;
+  slug: string;
+  niche: string;
+  platforms: string[];
+  createdAt: string;
+}
+
+export interface ContentItem {
+  id: number;
+  channelId: number;
+  title: string;
+  summary: string;
+  researchNotes: string;
+  script: string;
+  stage: Stage;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContentDraft {
+  title: string;
+  summary?: string;
+  researchNotes?: string;
+  script?: string;
+}
+
+export type ContentPatch = Partial<ContentDraft>;
+
+export interface StageCounts {
+  channelId: number;
+  counts: Record<Stage, number>;
+  total: number;
+}
+
+export const isStage = (v: unknown): v is Stage =>
+  typeof v === 'string' && (STAGES as readonly string[]).includes(v);
+
+export const stageIndex = (s: Stage): number => STAGES.indexOf(s);
+
+export const nextStage = (s: Stage): Stage | null => STAGES[stageIndex(s) + 1] ?? null;
+
+export const previousStage = (s: Stage): Stage | null =>
+  stageIndex(s) > 0 ? STAGES[stageIndex(s) - 1] : null;
+
+/**
+ * Workflow rule: work moves forward one stage at a time (no skipping review),
+ * and can be sent back to any earlier stage for rework.
+ */
+export function canTransition(from: Stage, to: Stage): boolean {
+  const f = stageIndex(from);
+  const t = stageIndex(to);
+  return t === f + 1 || t < f;
+}
+
+export const LIMITS = { title: 200, summary: 2000, researchNotes: 50000, script: 50000 } as const;
+
+/** Business goals (static targets for now; revenue tracking comes later). */
+export const BUSINESS_GOALS = {
+  cumulativeRevenueTarget: 1_000_000,
+  incomeToReplace: 150_000,
+  annualProfitTarget: 200_000
+} as const;
+
+export interface AppInfo {
+  version: string;
+  dataDir: string;
+}
+
+/** The API the preload exposes as window.api. Every call is validated again in main. */
+export interface AppApi {
+  listChannels(): Promise<Channel[]>;
+  listContent(channelId: number, stages?: Stage[]): Promise<ContentItem[]>;
+  getContent(id: number): Promise<ContentItem | null>;
+  createContent(channelId: number, draft: ContentDraft): Promise<ContentItem>;
+  updateContent(id: number, patch: ContentPatch): Promise<ContentItem>;
+  moveContent(id: number, to: Stage): Promise<ContentItem>;
+  deleteContent(id: number): Promise<void>;
+  stageCounts(channelId: number): Promise<StageCounts>;
+  appInfo(): Promise<AppInfo>;
+}
+
+/** IPC channel names, shared so preload and main cannot drift. */
+export const IPC = {
+  listChannels: 'channels:list',
+  listContent: 'content:list',
+  getContent: 'content:get',
+  createContent: 'content:create',
+  updateContent: 'content:update',
+  moveContent: 'content:move',
+  deleteContent: 'content:delete',
+  stageCounts: 'content:stageCounts',
+  appInfo: 'app:info'
+} as const satisfies Record<keyof AppApi, string>;

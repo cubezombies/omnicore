@@ -1,0 +1,24 @@
+appId: com.aimediaoperations.app
+productName: AI Media Operations
+copyright: Copyright © 2026
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+asar: true
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # User data lives outside the install dir; never wipe it on uninstall.
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  shortcutName: AI Media Operations
+publish: null

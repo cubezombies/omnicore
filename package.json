@@ -1,0 +1,36 @@
+{
+  "name": "ai-media-operations",
+  "productName": "AI Media Operations",
+  "version": "0.1.0",
+  "description": "Desktop operations console for an AI-produced media business",
+  "main": "out/main/index.js",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "postinstall": "install-electron",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "electron-vite build && node scripts/smoke.mjs",
+    "pack": "electron-vite build && electron-builder --dir --win --x64",
+    "dist": "electron-vite build && electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "45.5.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.4.0",
+    "vitest": "^5.1.2"
+  }
+}
