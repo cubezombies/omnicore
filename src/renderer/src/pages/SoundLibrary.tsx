@@ -9,12 +9,13 @@ function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
   const [attribution, setAttribution] = useState(t.attribution);
   const [sourceUrl, setSourceUrl] = useState(t.sourceUrl);
   const [tags, setTags] = useState(t.tags.join(', '));
+  const [commercialUse, setCommercialUse] = useState(t.commercialUse);
   const [error, setError] = useState<string | null>(null);
 
   async function save() {
     setError(null);
     try {
-      await window.api.updateSound(t.id, { title, license, attribution, sourceUrl, tags: tags.split(',').map((x) => x.trim()).filter(Boolean) });
+      await window.api.updateSound(t.id, { title, license, attribution, sourceUrl, commercialUse, tags: tags.split(',').map((x) => x.trim()).filter(Boolean) });
       setEditing(false);
       onChanged();
     } catch (e) {
@@ -43,6 +44,7 @@ function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
           </span>
           <div className={t.license ? 'small muted' : 'small field-error'}>{t.license || 'No licence recorded: add one before publishing videos that use this sound.'}</div>
           {t.attribution && <div className="small muted">Attribution: {t.attribution}</div>}
+          <div className={t.commercialUse === 'yes' ? 'small muted' : 'small field-error'}>{t.commercialUse === 'yes' ? 'Cleared for commercial videos (used automatically)' : t.commercialUse === 'no' ? 'Not for commercial use: never used automatically' : 'Commercial use not confirmed: never used automatically'}</div>
         </div>
         <audio controls preload="none" src={libraryUrl(t.file)} aria-label={`Preview ${t.title}`} />
         <span className="track-actions">
@@ -71,6 +73,14 @@ function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
           <label className="field">
             <span>Source URL</span>
             <input value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Commercial use (does the licence allow use in monetised/brand videos?)</span>
+            <select value={commercialUse} onChange={(e) => setCommercialUse(e.target.value as AudioTrack['commercialUse'])}>
+              <option value="unknown">Not confirmed</option>
+              <option value="yes">Yes: the licence allows commercial use</option>
+              <option value="no">No</option>
+            </select>
           </label>
           <label className="field">
             <span>Tags (comma separated; SFX tagged "transition" are used at scene cuts)</span>

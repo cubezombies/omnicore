@@ -163,7 +163,8 @@ export class OperationsRepository {
   resolveDestinations(brandId: number, overrides?: { platform: Platform; accountId: number | null }[]): ProductionDestination[] {
     const defaults = this.listDestinations(brandId).filter((d) => d.enabled && d.isDefault);
     const chosen = overrides?.length
-      ? overrides.map((o) => ({ platform: o.platform, accountId: o.accountId, privacy: defaults.find((d) => d.platform === o.platform)?.privacy ?? ('private' as const) }))
+      ? // A frozen destination with no account follows the brand's current explicit assignment (set later by the user).
+        overrides.map((o) => ({ platform: o.platform, accountId: o.accountId ?? defaults.find((d) => d.platform === o.platform)?.accountId ?? null, privacy: defaults.find((d) => d.platform === o.platform)?.privacy ?? ('private' as const) }))
       : defaults.map((d) => ({ platform: d.platform, accountId: d.accountId, privacy: d.privacy }));
     return chosen.map((d) => {
       const blockers: string[] = [];

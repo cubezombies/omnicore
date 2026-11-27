@@ -60,17 +60,27 @@ This covers what Omnicore can do through each platform's **official** API, what 
 - **Platform-native audio** (TikTok sounds, Instagram audio, YouTube Shorts sounds) can't be attached through any verified official API. If wanted, it's a **manual step in the platform app**, and Omnicore lists it in each production's "manual steps". Omnicore never pretends to attach it.
 - Commercial accounts should assume the platforms' general music libraries aren't cleared for commercial or branded use; only each platform's commercial libraries are, and only inside their apps.
 
-## What Omnicore implements now (0.5.0 Stage 1)
+## What Omnicore implements (0.5.0)
 
-- A brand → destination → account model. Each production stores its destinations and their blockers at creation and never falls back to "whichever account is connected".
-- Accounts can be registered as *not connected*. Token storage exists (encrypted with Windows DPAPI via Electron `safeStorage` when OAuth lands); no passwords are ever stored.
-- Per-platform metadata: title and caption within limits, hashtags, an AI-disclosure line plus API flags, credits and manual steps.
-- Approval gate: content that passes QA waits at **awaiting review**; content with a critical QA failure is **blocked**. Approval only records your decision; **no publishing code exists yet**, and nothing is reported as published.
-- Financial actions (ads, boosts, paid tools) throw `FinancialAuthorizationRequired`. Connecting an account never grants them.
+- A brand → destination → account model. Each production carries explicit destinations and blockers, and there is never a fallback to "whichever account is connected". Connecting refuses a sign-in that doesn't match the registered handle.
+- OAuth:
+  - TikTok: Login Kit for Desktop, with PKCE using a hex S256 challenge and a loopback redirect on a registered port.
+  - YouTube: Google installed-app OAuth, with PKCE S256 and a loopback redirect.
+  - Instagram: an App Dashboard token.
 
-## Next stage (not started)
+  Tokens and client secrets are encrypted with DPAPI (Electron `safeStorage`). Tokens refresh automatically; an account whose refresh fails is marked expired.
+- Publishing:
+  - TikTok Direct Post (`FILE_UPLOAD`, single chunk, `is_aigc`). The privacy level is chosen only from `creator_info` options and falls back to `SELF_ONLY`, never to something more public.
+  - YouTube resumable upload, with `containsSyntheticMedia`.
+  - Instagram Reels container → publish, from a public URL.
 
-OAuth connections, a real private test upload per platform (TikTok `SELF_ONLY`, YouTube private), then verification of the resulting post on the platform, all before any publishing is reported as working.
+  Each post is verified with the platform's status API before it's recorded as published.
+- Gates: finished video + **QA passed** + **approved** + connected destination. Approval is refused unless the last QA run passed. Auto-publish needs your opt-in *and* a confirmed public post you approved.
+- Financial actions throw `FinancialAuthorizationRequired`, and connecting an account never grants them.
+
+## Not yet verified on the real platforms
+
+The publishing code is tested against recorded API shapes, not against live accounts. A real upload needs your developer apps (see docs/launch-setup.md). Treat each platform as unverified until its first real post has been confirmed in Omnicore and seen on the platform.
 
 ## Sources
 

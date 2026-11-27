@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   DEFAULT_SETTINGS,
@@ -317,6 +319,26 @@ export class ProductionRepository {
   delete(id: number): void {
     this.row(id);
     this.db.prepare('DELETE FROM productions WHERE id = ?').run(id);
+  }
+
+  /**
+   * On startup: re-link finished videos whose output path was lost (older versions cleared it when a
+   * production was re-run from QA, which does not re-render). Only links a rendered final.mp4 that exists.
+   */
+  restoreOutputs(productionsDir: string): number[] {
+    const rows = this.db
+      .prepare(`SELECT p.id, a.path, a.meta FROM productions p JOIN production_assets a ON a.production_id = p.id AND a.kind = 'video'
+                WHERE p.status = 'completed' AND p.output_path IS NULL ORDER BY a.id`)
+      .all() as { id: number; path: string; meta: string }[];
+    const fixed: number[] = [];
+    for (const r of rows) {
+      const file = path.join(productionsDir, String(r.id), r.path);
+      if (!fs.existsSync(file) || fixed.includes(Number(r.id))) continue;
+      const dur = Number((JSON.parse(r.meta || '{}') as { durationSec?: number }).durationSec);
+      this.update(Number(r.id), { outputPath: file, durationSec: Number.isFinite(dur) ? dur : null });
+      fixed.push(Number(r.id));
+    }
+    return fixed;
   }
 
   /** On startup: anything left "running" was interrupted by an app exit. */

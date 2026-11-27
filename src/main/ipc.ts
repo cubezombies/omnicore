@@ -12,6 +12,8 @@ import { installKokoro } from './providers/sherpa';
 import { installAsr } from './qa/asr';
 import type { AuditLedger } from './audit/ledger';
 import type { OperatingEngine } from './autonomy/engine';
+import type { Publisher } from './publishing/publisher';
+import { PLATFORMS } from '../shared/operations';
 import type { OperationsRepository } from './db/operations';
 import type { AutonomySettings } from '../shared/operations';
 
@@ -36,6 +38,7 @@ export interface IpcDeps {
   ops: OperationsRepository;
   audit: AuditLedger;
   engine: OperatingEngine;
+  publisher: Publisher;
   isTrustedSender: (e: IpcMainInvokeEvent) => boolean;
 }
 
@@ -43,7 +46,7 @@ export interface IpcDeps {
  * Register every IPC handler. Each one checks the sender is our own top frame
  * and validates its arguments before touching the database or filesystem.
  */
-export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, isTrustedSender }: IpcDeps): void {
+export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender }: IpcDeps): void {
   const brandId = () => repo.listChannels()[0].id;
   const handlers: Record<InvokeKey, Handler> = {
     listChannels: () => repo.listChannels(),
@@ -137,12 +140,14 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     disconnectAccount: (id) => {
       const a = ops.disconnectAccount(v.id(id));
       audit.record({ actor: 'user', type: 'account.disconnected', subjectType: 'account', subjectId: a.id, data: { platform: a.platform, handle: a.handle } });
+      publisher.refreshDestinations(brandId());
       return a;
     },
     listDestinations: () => ops.listDestinations(brandId()),
     setDestination: (platform, accountId, enabled, privacy) => {
       const d = ops.setDestination(brandId(), v.platform(platform), { accountId: accountId === null ? null : v.id(accountId), enabled: v.bool(enabled), privacy: v.privacy(privacy) });
       audit.record({ actor: 'user', type: 'destination.set', subjectType: 'destination', subjectId: d.id, data: { ...d } });
+      publisher.refreshDestinations(brandId());
       return d;
     },
     getBrandPresenter: () => ops.brandPresenter(brandId()),
@@ -156,6 +161,8 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     approveProduction: (id, note) => {
       const p = productions.get(v.id(id));
       if (p.approval !== 'awaiting_review') throw new Error(p.approval === 'blocked' ? 'This production failed critical QA checks and cannot be approved.' : `Nothing to approve (status: ${p.approval}).`);
+      const qa = ops.qaRuns(p.id).at(-1);
+      if (qa?.status !== 'passed') throw new Error(`Only videos that passed the quality check can be approved (last result: ${qa?.status ?? 'not run'}). Fix the issues or re-run QA first.`);
       productions.update(p.id, { approval: 'approved' });
       audit.record({ actor: 'user', type: 'approval.granted', productionId: p.id, data: { note: v.shortText(note, 'Note', 500), destinations: p.destinations, publishes: false } });
     },
@@ -182,6 +189,19 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       audit.record({ actor: 'user', type: 'incident.recorded', productionId: i.productionId, subjectType: 'incident', subjectId: i.id, data: { kind: i.kind, assetKey: i.assetKey, description: i.description } });
       return i;
     },
+    platformApps: () => PLATFORMS.map((pl) => publisher.appSummary(pl)),
+    savePlatformApp: (platform, app) => publisher.saveApp(v.platform(platform), v.platformApp(app)),
+    connectAccount: async (id) => {
+      const a = await publisher.connect(v.id(id), AbortSignal.timeout(6 * 60_000));
+      publisher.refreshDestinations(brandId());
+      return a;
+    },
+    publications: (id) => publisher.publications(v.id(id)),
+    publishBlockers: (id) => {
+      const p = productions.get(v.id(id));
+      return Object.fromEntries(p.destinations.map((d) => [d.platform, publisher.blockers(p.id, d.platform)]));
+    },
+    publishProduction: (id, platform) => publisher.publish(v.id(id), v.platform(platform), 'user'),
     resolveIncident: (id) => {
       ops.resolveIncident(v.id(id));
       audit.record({ actor: 'user', type: 'incident.resolved', subjectType: 'incident', subjectId: Number(id) });

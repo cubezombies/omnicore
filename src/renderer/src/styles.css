@@ -212,3 +212,6 @@ legend { font-weight: 600; padding: 0 var(--s1); }
 .qa-major { color: #fdba74; }
 .meta-caption { white-space: pre-wrap; font: 13px/1.5 var(--font); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s3); margin: 0; }
 details summary { cursor: pointer; }
+.spinner { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }

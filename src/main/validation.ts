@@ -266,6 +266,21 @@ export function autonomy(v: unknown): AutonomySettings {
     activeToHour: Math.round(num(o.activeToHour, 'End hour', 0, 24)),
     minIdeaScore: Math.round(num(o.minIdeaScore, 'Minimum score', 0, 100)),
     maxIdeasKept: Math.round(num(o.maxIdeasKept, 'Ideas kept', 5, 500)),
-    maxRepairRounds: Math.round(num(o.maxRepairRounds, 'Repair rounds', 0, 5))
+    maxRepairRounds: Math.round(num(o.maxRepairRounds, 'Repair rounds', 0, 5)),
+    autoPublish: o.autoPublish === undefined ? false : b('autoPublish')
+  };
+}
+
+export function platformApp(v: unknown): { clientId?: string; clientSecret?: string; redirectPort?: number; accessToken?: string; publicVideoBaseUrl?: string } {
+  const o = object(v, 'app');
+  const opt = (k: string, max: number) => (o[k] === undefined ? undefined : str(o[k], k, max));
+  const base = opt('publicVideoBaseUrl', 500);
+  if (base && !/^https:\/\/[^\s]+$/.test(base)) throw new ValidationError('The public video location must be an https:// URL');
+  return {
+    clientId: opt('clientId', 300),
+    clientSecret: opt('clientSecret', 500),
+    accessToken: opt('accessToken', 1000),
+    redirectPort: o.redirectPort === undefined ? undefined : Math.round(num(o.redirectPort, 'Redirect port', 0, 65535)),
+    publicVideoBaseUrl: base
   };
 }

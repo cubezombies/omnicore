@@ -187,6 +187,8 @@ export interface AutonomySettings {
   maxIdeasKept: number;
   /** Max automatic QA repair rounds before a production is blocked for review. */
   maxRepairRounds: number;
+  /** Publish QA-passed autonomous videos without per-video review — only after you have approved one public post. */
+  autoPublish: boolean;
 }
 
 export const DEFAULT_AUTONOMY: AutonomySettings = {
@@ -199,7 +201,8 @@ export const DEFAULT_AUTONOMY: AutonomySettings = {
   activeToHour: 22,
   minIdeaScore: 55,
   maxIdeasKept: 60,
-  maxRepairRounds: 2
+  maxRepairRounds: 2,
+  autoPublish: false
 };
 
 export interface EngineStatus {
@@ -211,4 +214,32 @@ export interface EngineStatus {
   activeProductionId: number | null;
   lastError: string | null;
   limitations: string[];
+}
+
+// ---- publishing (0.5 Stage 2) ----
+export interface Publication {
+  id: number;
+  productionId: number;
+  platform: Platform;
+  accountId: number | null;
+  privacyRequested: Privacy;
+  privacyApplied: string;
+  status: 'uploading' | 'processing' | 'published' | 'failed';
+  remoteId: string;
+  url: string;
+  detail: string;
+  approvedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What the UI may show about a configured developer app (secrets never leave the main process). */
+export interface PlatformAppSummary {
+  platform: Platform;
+  configured: boolean;
+  clientId: string;
+  hasSecret: boolean;
+  hasAccessToken: boolean;
+  redirectPort: number;
+  publicVideoBaseUrl: string;
 }

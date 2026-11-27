@@ -1,4 +1,5 @@
 import type { AuditLedger } from '../audit/ledger';
+import type { Publisher } from '../publishing/publisher';
 import type { OperationsRepository } from '../db/operations';
 import type { ProductionRepository } from '../db/productions';
 import type { ProductionRunner } from '../pipeline/runner';
@@ -14,6 +15,8 @@ export interface EngineDeps {
   now?: () => Date;
   tickMs?: number;
   onChange?: () => void;
+  /** Publishing (optional so tests can run the loop without it). */
+  publisher?: Pick<Publisher, 'verifyPending' | 'hasUserApprovedPublicPost' | 'blockers' | 'publish'>;
 }
 
 /** What the operating engine cannot do on its own — shown in the UI so nobody assumes 24/7 operation. */
@@ -84,6 +87,7 @@ export class OperatingEngine {
         if (due) await this.runDiscovery(brandId);
         this.retryFailed(brandId);
         this.maybeStartProduction(brandId);
+        await this.autoPublish(brandId);
       }
       this.lastError = null;
     } catch (e) {
@@ -175,6 +179,33 @@ export class OperatingEngine {
         } else if (attempts >= MAX_ATTEMPTS) {
           this.d.ops.decideIdea(idea.id, 'failed', `gave up after ${attempts} attempts: ${p.error}`);
           this.d.audit.record({ actor: 'engine', type: 'idea.failed', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { error: p.error } });
+        }
+      }
+    }
+  }
+
+  /**
+   * Check on submitted posts, and — only when you enabled auto-publish AND have already approved a public post
+   * that the platform confirmed — approve and publish QA-passed autonomous videos to their unblocked destinations.
+   */
+  async autoPublish(brandId: number): Promise<void> {
+    const pub = this.d.publisher;
+    if (!pub) return;
+    await pub.verifyPending();
+    if (!this.d.ops.getAutonomy().autoPublish || !pub.hasUserApprovedPublicPost()) return;
+    for (const p of this.d.productions.list(brandId).filter((x) => x.origin === 'autonomous' && x.status === 'completed' && x.approval === 'awaiting_review')) {
+      if (this.d.ops.qaRuns(p.id).at(-1)?.status !== 'passed') continue;
+      // Approval is the only blocker auto-publish may lift; skip if anything else (e.g. a disconnected account) blocks every destination.
+      const ready = p.destinations.filter((d) => pub.blockers(p.id, d.platform).every((b) => b === 'Not approved for publication.'));
+      if (!ready.length) continue;
+      this.d.productions.update(p.id, { approval: 'approved' });
+      this.d.audit.record({ actor: 'engine', type: 'approval.granted', productionId: p.id, data: { reason: 'auto-publish: QA passed and a user-approved public post exists', publishes: true } });
+      for (const d of this.d.productions.get(p.id).destinations) {
+        if (pub.blockers(p.id, d.platform).length) continue;
+        try {
+          await pub.publish(p.id, d.platform, 'engine');
+        } catch (e) {
+          this.lastError = `Publishing #${p.id} to ${d.platform}: ${e instanceof Error ? e.message : String(e)}`;
         }
       }
     }

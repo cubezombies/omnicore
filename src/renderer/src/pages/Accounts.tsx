@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { KOKORO_VOICES } from '../../../shared/production';
-import { PLATFORMS, PLATFORM_LABELS, type AuditVerification, type BrandDestination, type Incident, type Platform, type PlatformAccount, type Privacy } from '../../../shared/operations';
+import { PLATFORMS, PLATFORM_LABELS, type AuditVerification, type BrandDestination, type Incident, type Platform, type PlatformAccount, type PlatformAppSummary, type Privacy } from '../../../shared/operations';
 import { errorText } from '../components/ProductionDetail';
 
 export function Accounts() {
@@ -13,12 +13,15 @@ export function Accounts() {
   const [newHandle, setNewHandle] = useState('');
   const [incidentText, setIncidentText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [apps, setApps] = useState<PlatformAppSummary[]>([]);
+  const [connecting, setConnecting] = useState<number | null>(null);
 
   const load = useCallback(() => {
     void window.api.listAccounts().then(setAccounts);
     void window.api.listDestinations().then(setDests);
     void window.api.getBrandPresenter().then(setPresenter);
     void window.api.listIncidents().then(setIncidents);
+    void window.api.platformApps().then(setApps);
   }, []);
   useEffect(load, [load]);
   const act = async (fn: () => Promise<unknown>) => {
@@ -42,18 +45,23 @@ export function Accounts() {
       {error && <div className="banner error" role="alert">{error}</div>}
 
       <h2>Platform accounts</h2>
-      <p className="muted small">Accounts connect through each platform’s official sign-in (OAuth). That integration is the next stage; until then accounts are registered here as <em>not connected</em> and nothing can be published.</p>
+      <p className="muted small">Register the account, then <strong>Connect</strong> signs in through the platform’s own page in your browser (Instagram uses a token from Meta’s App Dashboard). Omnicore never sees your password; sign-ins are encrypted with Windows secure storage. Connecting allows publishing only.</p>
       <ul className="tracks">
         {accounts.map((a) => (
           <li key={a.id} className="track">
             <div className="track-main">
               <div>
                 <strong>{a.handle}</strong> <span className="muted small">· {PLATFORM_LABELS[a.platform]} · {a.displayName || 'no profile yet'}</span>
-                <div className="small muted">Status: {a.status.replace('_', ' ')}{a.tokenExpiresAt ? ` · token expires ${new Date(a.tokenExpiresAt).toLocaleString()}` : ''}{a.lastAuthAt ? ` · last sign-in ${new Date(a.lastAuthAt).toLocaleString()}` : ''}</div>
+                <div className="small muted">Status: {a.status.replace('_', ' ')}{a.tokenExpiresAt ? ` · token expires ${new Date(a.tokenExpiresAt).toLocaleString()}` : ''}{a.lastError ? ` · ${a.lastError}` : ''}{a.lastAuthAt ? ` · last sign-in ${new Date(a.lastAuthAt).toLocaleString()}` : ''}</div>
                 <div className="small muted">Can publish: {a.capabilities.canPublishPublic ? 'public' : a.capabilities.canPublishPrivate ? 'private only' : 'no'} · Financial permissions: never{a.capabilities.restrictions.length ? ` · ${a.capabilities.restrictions.join('; ')}` : ''}</div>
               </div>
               <span />
               <span className="track-actions">
+                {a.status !== 'connected' && (
+                  <button className="secondary" disabled={connecting !== null || !apps.find((x) => x.platform === a.platform)?.configured} title={apps.find((x) => x.platform === a.platform)?.configured ? '' : 'Set up the developer app below first'} onClick={() => (setConnecting(a.id), act(() => window.api.connectAccount(a.id)).finally(() => setConnecting(null)))}>
+                    {connecting === a.id ? 'Waiting for sign-in…' : 'Connect'}
+                  </button>
+                )}
                 {a.status !== 'not_connected' && <button className="ghost" onClick={() => act(() => window.api.disconnectAccount(a.id))}>Disconnect</button>}
               </span>
             </div>
@@ -67,6 +75,12 @@ export function Accounts() {
         <input aria-label="Handle" placeholder="@aiactuallyofficial" value={newHandle} onChange={(e) => setNewHandle(e.target.value)} />
         <button className="secondary" disabled={!newHandle.trim()} onClick={() => act(async () => (await window.api.addAccount(newPlatform, newHandle), setNewHandle('')))}>Register account</button>
       </div>
+
+      <h2>Developer apps</h2>
+      <p className="muted small">Each platform requires your own registered developer app (setup: docs/launch-setup.md). Secrets are stored encrypted and never shown again.</p>
+      <ul className="tracks">
+        {apps.map((ap) => <AppForm key={ap.platform} app={ap} onSaved={load} onError={setError} />)}
+      </ul>
 
       <h2>AI, Actually destinations</h2>
       <p className="muted small">Every production is assigned these destinations when it is created. Omnicore never falls back to another account.</p>
@@ -124,5 +138,45 @@ export function Accounts() {
         ))}
       </ul>
     </section>
+  );
+}
+
+function AppForm({ app, onSaved, onError }: { app: PlatformAppSummary; onSaved: () => void; onError: (e: string | null) => void }) {
+  const [clientId, setClientId] = useState(app.clientId);
+  const [secret, setSecret] = useState('');
+  const [port, setPort] = useState(app.redirectPort);
+  const [token, setToken] = useState('');
+  const [base, setBase] = useState(app.publicVideoBaseUrl);
+  const ig = app.platform === 'instagram';
+  const save = async () => {
+    onError(null);
+    try {
+      await window.api.savePlatformApp(app.platform, ig ? { accessToken: token, publicVideoBaseUrl: base } : { clientId, clientSecret: secret, redirectPort: port });
+      setSecret('');
+      setToken('');
+      onSaved();
+    } catch (e) {
+      onError(errorText(e));
+    }
+  };
+  return (
+    <li className="track">
+      <div className="track-edit">
+        <strong>{PLATFORM_LABELS[app.platform]}</strong> <span className={app.configured ? 'muted small' : 'field-error small'}>{app.configured ? 'configured' : 'not configured'}</span>
+        {ig ? (
+          <>
+            <label className="field"><span>Access token (Meta App Dashboard → Instagram → API setup){app.hasAccessToken ? ': stored' : ''}</span><input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder={app.hasAccessToken ? '•••••• (leave blank to keep)' : ''} /></label>
+            <label className="field"><span>Public video location (https; Instagram downloads &lt;location&gt;/&lt;id&gt;.mp4)</span><input value={base} onChange={(e) => setBase(e.target.value)} placeholder="https://…" /></label>
+          </>
+        ) : (
+          <>
+            <label className="field"><span>{app.platform === 'tiktok' ? 'Client key' : 'OAuth client ID (Desktop app)'}</span><input value={clientId} onChange={(e) => setClientId(e.target.value)} /></label>
+            <label className="field"><span>Client secret{app.hasSecret ? ': stored' : ''}</span><input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={app.hasSecret ? '•••••• (leave blank to keep)' : ''} /></label>
+            {app.platform === 'tiktok' && <label className="field"><span>Redirect port (register http://127.0.0.1:{port}/callback in TikTok’s developer portal)</span><input type="number" min={1024} max={65535} value={port} onChange={(e) => setPort(Number(e.target.value))} /></label>}
+          </>
+        )}
+        <div className="prod-actions"><button className="secondary" onClick={save}>Save</button></div>
+      </div>
+    </li>
   );
 }

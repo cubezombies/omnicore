@@ -269,7 +269,26 @@ const MIGRATIONS: string[] = [
     SELECT id, p.platform, 1, CASE p.platform WHEN 'tiktok' THEN 1 ELSE 0 END, 'private'
     FROM channels, (SELECT 'tiktok' AS platform UNION ALL SELECT 'youtube' UNION ALL SELECT 'instagram') p
     WHERE slug = 'ai-actually';
+  `,
+  // v6: publishing records (one per production × platform), verified against the platform.
   `
+  CREATE TABLE publications (
+    id                 INTEGER PRIMARY KEY,
+    production_id      INTEGER NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+    platform           TEXT NOT NULL CHECK (platform IN ('tiktok','youtube','instagram')),
+    account_id         INTEGER REFERENCES platform_accounts(id) ON DELETE SET NULL,
+    privacy_requested  TEXT NOT NULL,
+    privacy_applied    TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'uploading' CHECK (status IN ('uploading','processing','published','failed')),
+    remote_id          TEXT NOT NULL DEFAULT '',
+    url                TEXT NOT NULL DEFAULT '',
+    detail             TEXT NOT NULL DEFAULT '',
+    approved_by        TEXT NOT NULL DEFAULT '',
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX idx_publications_prod ON publications(production_id, platform);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -85,6 +85,7 @@ export function Operations() {
               <label className="check"><input type="checkbox" checked={cfg.enabled} onChange={(e) => set('enabled', e.target.checked)} /> Run autonomously (discover, select, produce, QA)</label>
               <label className="check"><input type="checkbox" checked={cfg.keepRunningInTray} onChange={(e) => set('keepRunningInTray', e.target.checked)} /> Keep running in the system tray when the window is closed</label>
               <label className="check"><input type="checkbox" checked={cfg.runAtStartup} onChange={(e) => set('runAtStartup', e.target.checked)} /> Start in the background when Windows starts (installed app)</label>
+              <label className="check"><input type="checkbox" checked={cfg.autoPublish} onChange={(e) => set('autoPublish', e.target.checked)} /> Auto-publish videos that pass QA (only after you have approved and published one public video)</label>
             </fieldset>
             <fieldset>
               <legend>Schedule &amp; limits</legend>

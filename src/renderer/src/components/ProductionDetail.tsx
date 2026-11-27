@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { QaRun } from '../../../shared/operations';
+import type { Platform, Publication, QaRun } from '../../../shared/operations';
 import {
   CLAIM_KIND_LABELS,
   SOURCE_KIND_LABELS,
@@ -241,9 +241,15 @@ function ReadinessPanel({ production: p }: { production: Production }) {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [exported, setExported] = useState<string | null>(null);
+  const [pubs, setPubs] = useState<Publication[]>([]);
+  const [blockers, setBlockers] = useState<Record<string, string[]>>({});
+  const [publishing, setPublishing] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     void window.api.qaRuns(p.id).then(setRuns);
-  }, [p.id, p.updatedAt]);
+    void window.api.publications(p.id).then(setPubs);
+    void window.api.publishBlockers(p.id).then(setBlockers);
+  }, [p.id, p.updatedAt, tick]);
   const last = runs.at(-1);
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
@@ -254,6 +260,14 @@ function ReadinessPanel({ production: p }: { production: Production }) {
     }
   };
   const meta = Object.values(p.metadata ?? {});
+  const publish = async (platform: Platform) => {
+    const d = p.destinations.find((x) => x.platform === platform);
+    if (d?.privacy === 'public' && !window.confirm(`Publish this video PUBLICLY to ${d.handle} on ${platform}? Anyone will be able to see it.`)) return;
+    setPublishing(platform);
+    await act(() => window.api.publishProduction(p.id, platform));
+    setPublishing(null);
+    setTick((x) => x + 1);
+  };
   return (
     <section className="readiness">
       <h3>Publication readiness</h3>
@@ -285,6 +299,28 @@ function ReadinessPanel({ production: p }: { production: Production }) {
           </ul>
         </details>
       )}
+      {pubs.length > 0 && (
+        <ul className="sources">
+          {pubs.map((x) => (
+            <li key={x.id}>
+              <strong>{x.platform}</strong>: {x.status}{x.privacyApplied ? ` (${x.privacyApplied})` : ''} {x.url && <a href={x.url} target="_blank" rel="noreferrer">{x.url}</a>} <span className="muted small">{x.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {p.approval === 'approved' && Object.entries(blockers).some(([, b]) => b.length) && (
+        <ul className="muted small">
+          {Object.entries(blockers).filter(([, b]) => b.length).map(([pl, b]) => <li key={pl}>{pl}: {b.join(' ')}</li>)}
+        </ul>
+      )}
+      {publishing && (
+        <p className="small" role="status">
+          <span className="spinner" aria-hidden="true" /> Uploading to {publishing} and waiting for {publishing} to confirm the post. This usually takes under two minutes; keep Omnicore open.
+        </p>
+      )}
+      {p.approval === 'approved' && !publishing && p.publishStatus === 'not_published' && Object.values(blockers).some((b) => b.length === 0) && (
+        <p className="small">Approved. Click <strong>Publish</strong> below to post it; approving alone never publishes.</p>
+      )}
       {meta.map((m) => (
         <details key={m.platform}>
           <summary>{m.platform} metadata</summary>
@@ -297,10 +333,16 @@ function ReadinessPanel({ production: p }: { production: Production }) {
         {p.approval === 'awaiting_review' && (
           <>
             <input aria-label="Approval note" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-            <button className="primary" onClick={() => act(() => window.api.approveProduction(p.id, note))}>Approve for publication</button>
-            <button className="danger" onClick={() => act(() => window.api.rejectProduction(p.id, note))}>Reject</button>
+            <button className="primary" onClick={() => act(() => window.api.approveProduction(p.id, note)).then(() => setTick((x) => x + 1))}>Approve for publication</button>
+            <button className="danger" onClick={() => act(() => window.api.rejectProduction(p.id, note)).then(() => setTick((x) => x + 1))}>Reject</button>
           </>
         )}
+        {p.approval === 'approved' &&
+          p.destinations.map((d) => (
+            <button key={d.platform} className="primary" disabled={publishing !== null || (blockers[d.platform]?.length ?? 1) > 0} title={(blockers[d.platform] ?? []).join(' ')} onClick={() => void publish(d.platform)}>
+              {publishing === d.platform ? `Publishing to ${d.platform}…` : `Publish to ${d.platform} (${d.privacy})`}
+            </button>
+          ))}
         <button className="secondary" onClick={() => act(() => window.api.runQa(p.id))}>Re-run QA</button>
         <button className="secondary" onClick={() => act(async () => setExported(await window.api.exportAudit(p.id)))}>Export audit report</button>
         {exported && <span className="muted small">Saved {exported}</span>}

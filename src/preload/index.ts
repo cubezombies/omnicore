@@ -56,6 +56,12 @@ const api: AppApi = {
   listIncidents: () => ipcRenderer.invoke(IPC.listIncidents),
   addIncident: (kind, description, productionId, assetKey) => ipcRenderer.invoke(IPC.addIncident, kind, description, productionId, assetKey),
   resolveIncident: (id) => ipcRenderer.invoke(IPC.resolveIncident, id),
+  platformApps: () => ipcRenderer.invoke(IPC.platformApps),
+  savePlatformApp: (platform, app) => ipcRenderer.invoke(IPC.savePlatformApp, platform, app),
+  connectAccount: (accountId) => ipcRenderer.invoke(IPC.connectAccount, accountId),
+  publications: (productionId) => ipcRenderer.invoke(IPC.publications, productionId),
+  publishBlockers: (productionId) => ipcRenderer.invoke(IPC.publishBlockers, productionId),
+  publishProduction: (productionId, platform) => ipcRenderer.invoke(IPC.publishProduction, productionId, platform),
   onProductionChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, id: unknown) => {
       if (typeof id === 'number') cb(id);

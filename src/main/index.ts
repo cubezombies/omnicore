@@ -1,4 +1,6 @@
-import { app, BrowserWindow, dialog, Menu, nativeImage, net, protocol, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, net, protocol, safeStorage, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
+import { Publisher } from './publishing/publisher';
+import { defaultClients } from './publishing/platforms';
 import { AuditLedger } from './audit/ledger';
 import { defaultDiscoverySources, discover } from './autonomy/discovery';
 import { OperatingEngine } from './autonomy/engine';
@@ -262,6 +264,7 @@ if (!app.requestSingleInstanceLock()) {
     const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath));
     fs.mkdirSync(productionsDir, { recursive: true });
     productions.markInterrupted();
+    productions.restoreOutputs(productionsDir);
     const ops = new OperationsRepository(db);
     const audit = new AuditLedger(db, path.join(dataDir, 'evidence'));
     const runner = new ProductionRunner({
@@ -292,7 +295,22 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
     const samplesDir = path.join(dataDir, 'samples');
+    // Tokens and developer-app secrets are encrypted with Windows DPAPI via safeStorage; never stored in plain text.
+    const publisher = new Publisher({
+      db,
+      ops,
+      productions,
+      audit,
+      clients: defaultClients(),
+      open: (url) => shell.openExternal(url),
+      box: {
+        available: () => safeStorage.isEncryptionAvailable(),
+        encrypt: (s) => safeStorage.encryptString(s),
+        decrypt: (b) => safeStorage.decryptString(Buffer.from(b))
+      }
+    });
     const engine = new OperatingEngine({
+      publisher,
       ops,
       productions,
       runner,
@@ -300,7 +318,7 @@ if (!app.requestSingleInstanceLock()) {
       discover: (_brandId, keywords, recent, signal) => discover(defaultDiscoverySources(), keywords, recent, signal),
       onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
     });
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, isTrustedSender });
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender });
     registerMediaProtocol(productionsDir, library.dir, samplesDir);
 
     const applyAutonomy = (a: AutonomySettings) => {

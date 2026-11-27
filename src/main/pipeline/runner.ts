@@ -137,7 +137,8 @@ export class ProductionRunner {
     if (startIdx <= PRODUCTION_STEPS.indexOf('research')) this.d.repo.update(id, { sources: [] });
     if (startIdx <= PRODUCTION_STEPS.indexOf('brief')) this.d.repo.update(id, { brief: null });
     if (startIdx <= PRODUCTION_STEPS.indexOf('script')) this.d.repo.update(id, { storyboard: null });
-    this.d.repo.update(id, { outputPath: null, durationSec: null });
+    // Only a re-render replaces the video; re-running QA keeps the finished file linked.
+    if (startIdx <= PRODUCTION_STEPS.indexOf('render')) this.d.repo.update(id, { outputPath: null, durationSec: null });
     this.enqueue(id);
   }
 
@@ -203,7 +204,10 @@ export class ProductionRunner {
     this.d.emit(id);
     let current: StepName | null = null;
     try {
-      const settings = this.brandSettings(repo.get(id).channelId);
+      const prod = repo.get(id);
+      const brand = this.brandSettings(prod.channelId);
+      // Autonomous productions always carry licensed music (cleared tracks or Omnicore-generated beds).
+      const settings = prod.origin === 'autonomous' && brand.musicMode === 'none' ? { ...brand, musicMode: 'auto' as const } : brand;
       const providers = this.d.providers(settings);
       this.audit({ type: 'production.started', productionId: id, data: { narration: settings.narration, voice: settings.narration === 'sherpa' ? settings.sherpaVoice : settings.narration === 'piper' ? settings.piperVoice : settings.voice, writer: settings.writer, visuals: settings.visuals, musicMode: settings.musicMode, research: settings.researchProviders } });
       for (const step of PRODUCTION_STEPS) {
