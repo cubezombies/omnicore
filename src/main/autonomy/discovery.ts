@@ -5,6 +5,7 @@ import { significantTokens } from '../providers/text';
 import { NEWSROOM_FEEDS, PRESS_FEEDS, type FeedDef } from '../research/adapters';
 import { classifyUrl } from '../research/classify';
 import { parseFeed, toIso } from '../research/text';
+import { topicRelevance } from './relevance';
 
 export interface DiscoveredItem extends IdeaSignal {
   summary: string;
@@ -142,7 +143,7 @@ export function deriveTopic(cluster: DiscoveredItem[]): { topic: string; headlin
 const rankKind = (k: string) => ({ company: 4, official: 4, research: 3, reporting: 3, other: 1, community: 0 })[k as 'company'] ?? 1;
 
 /** Transparent opportunity score (0–100) with its parts. */
-export function scoreCluster(cluster: DiscoveredItem[], keywords: string[], recentTopics: string[], now = Date.now()): ScoreDetail {
+export function scoreCluster(cluster: DiscoveredItem[], keywords: string[], recentTopics: string[], now = Date.now(), anchors: string[] = []): ScoreDetail {
   const notes: string[] = [];
   const newest = Math.max(...cluster.map((i) => (i.publishedAt ? Date.parse(i.publishedAt) : now - 5 * DAY)));
   const ageH = (now - newest) / 3600_000;
@@ -151,12 +152,17 @@ export function scoreCluster(cluster: DiscoveredItem[], keywords: string[], rece
   const coverage = outlets >= 3 ? 1 : outlets === 2 ? 0.7 : 0.35;
   const hasPrimary = cluster.some((i) => ['company', 'official', 'research'].includes(i.kind));
   const primarySource = hasPrimary ? 1 : 0.4;
-  const hits = new Set(cluster.flatMap((i) => nicheHits(`${i.title} ${i.summary}`, keywords)));
-  const nicheFit = Math.min(1, hits.size / 3);
+  const rel = cluster.map((i) => topicRelevance(`${i.title} ${i.summary}`, keywords, anchors));
+  const hits = new Set(rel.flatMap((r) => r.keywordHits));
+  const anchorHits = new Set(rel.flatMap((r) => r.anchorHits));
+  const onTopic = rel.some((r) => r.onTopic);
+  // Generic keywords only count once the story is on topic (for an AI business: it names an AI term).
+  const nicheFit = onTopic ? Math.min(1, (hits.size + (anchors.length ? Math.min(1, anchorHits.size) : 0)) / 3) : 0;
   const t = tok(cluster.map((i) => i.title).join(' '));
   const similar = recentTopics.reduce((m, r) => Math.max(m, jaccard(t, tok(r))), 0);
   const novelty = 1 - similar;
   notes.push(`${outlets} outlet(s)`, `newest ${Math.round(ageH)} h ago`, hasPrimary ? 'has primary source' : 'no primary source', `brand keywords: ${[...hits].join(', ') || 'none'}`);
+  if (anchors.length) notes.push(anchorHits.size ? `AI terms: ${[...anchorHits].join(', ')}` : 'no AI term (off topic)');
   if (similar > 0.5) notes.push('similar to a recent topic');
   const total = Math.round(freshness * 25 + coverage * 25 + primarySource * 20 + nicheFit * 20 + novelty * 10);
   return { freshness, coverage, primarySource, nicheFit, novelty, total, notes };
@@ -169,7 +175,7 @@ export interface DiscoveryResult {
 }
 
 /** Discover opportunities: fetch signals, keep on-niche items, cluster stories, derive topics and score them. */
-export async function discover(sources: DiscoverySource[], keywords: string[], recentTopics: string[], signal: AbortSignal): Promise<DiscoveryResult> {
+export async function discover(sources: DiscoverySource[], keywords: string[], recentTopics: string[], signal: AbortSignal, anchors: string[] = []): Promise<DiscoveryResult> {
   const sourceReports: DiscoveryResult['sourceReports'] = [];
   const all: DiscoveredItem[] = [];
   await Promise.all(
@@ -183,13 +189,13 @@ export async function discover(sources: DiscoverySource[], keywords: string[], r
       }
     })
   );
-  const onNiche = all.filter((i) => i.kind !== 'community' && !COMMERCE.test(i.title) && !DIGEST.test(i.title) && nicheHits(`${i.title} ${i.summary}`, keywords).length > 0);
+  const onNiche = all.filter((i) => i.kind !== 'community' && !COMMERCE.test(i.title) && !DIGEST.test(i.title) && topicRelevance(`${i.title} ${i.summary}`, keywords, anchors).onTopic);
   const seen = new Set<string>();
   const unique = onNiche.filter((i) => (seen.has(i.url) ? false : (seen.add(i.url), true)));
   const candidates = clusterItems(unique)
     .map((cluster): CandidateIdea => {
       const { topic, headline } = deriveTopic(cluster);
-      const scoreDetail = scoreCluster(cluster, keywords, recentTopics);
+      const scoreDetail = scoreCluster(cluster, keywords, recentTopics, Date.now(), anchors);
       const mode = cluster.every((i) => i.provider === 'huggingface-trending') ? 'explainer' : 'news';
       const fingerprint = createHash('sha1').update([...tok(topic)].sort().join(' ')).digest('hex').slice(0, 16);
       return { topic, headline, mode, signals: cluster.map(({ summary: _s, ...sig }) => sig), score: scoreDetail.total, scoreDetail, fingerprint };

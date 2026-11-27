@@ -207,6 +207,19 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
     try {
       validateStoryboard(sb, p.sources, PRODUCTION_FORMATS[p.format ?? 'short'].maxScenes);
       out.push(finding('facts.storyboard', 'facts', 'critical', true, 'Storyboard structure and citations are valid.'));
+      // A script from the deterministic fallback writer is never passed silently: it is a major finding until the
+      // script is rewritten by the configured writer.
+      out.push(
+        finding(
+          'script.fallback',
+          'facts',
+          'major',
+          !sb.fallbackReason,
+          sb.fallbackReason ? `The script was written by the deterministic fallback writer because the configured writer failed (${sb.fallbackReason}). Rewrite it when the LLM is available.` : `Written by ${sb.writer}.`,
+          sb.fallbackReason ? { reason: sb.fallbackReason } : {},
+          'rescript'
+        )
+      );
     } catch (e) {
       out.push(finding('facts.storyboard', 'facts', 'critical', false, (e as Error).message, {}, 'rescript'));
     }

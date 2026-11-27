@@ -191,8 +191,17 @@ export class ProductionRunner {
     }
   }
 
-  delete(id: number): void {
+  delete(id: number, actor = 'user'): void {
+    const p = this.d.repo.get(id);
     this.cancel(id);
+    // Recorded before the row goes; the audit log keeps every earlier event for this production number.
+    this.d.audit?.record({
+      actor,
+      businessId: p.channelId,
+      type: 'production.deleted',
+      productionId: id,
+      data: { topic: p.topic, status: p.status, origin: p.origin, ideaId: p.ideaId, format: p.format, approval: p.approval, publishStatus: p.publishStatus, outputPath: p.outputPath, durationSec: p.durationSec, createdAt: p.createdAt, assets: p.assets.length }
+    });
     this.d.repo.delete(id);
     const dir = this.dirFor(id);
     if (path.dirname(dir) === path.resolve(this.d.productionsDir)) fs.rmSync(dir, { recursive: true, force: true });
@@ -361,6 +370,8 @@ export class ProductionRunner {
         const fb = c.providers.fallbackWriter;
         if (e instanceof CancelledError || c.signal.aborted || !fb) throw e;
         const reason = `${primary.label}: ${errMsg(e)}`;
+        // Autonomous productions never use the deterministic fallback: they stop with the writer's error.
+        if (p.origin === 'autonomous') throw new Error(`The script writer failed (${reason}). Autonomous productions never fall back to the deterministic writer; fix the writer and retry.`);
         c.progress(0.6, `Falling back to ${fb.label}…`);
         storyboard = { ...(await fb.write(input, c.signal)).storyboard, fallbackReason: reason };
         storyboard.writer = `${storyboard.writer} (fallback)`;

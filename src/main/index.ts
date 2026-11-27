@@ -329,7 +329,7 @@ if (!app.requestSingleInstanceLock()) {
       runner,
       audit,
       topics,
-      discover: (_brandId, keywords, recent, signal) => discover(defaultDiscoverySources(), keywords, recent, signal),
+      discover: (_brandId, keywords, recent, signal, anchors) => discover(defaultDiscoverySources(), keywords, recent, signal, anchors),
       onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
     });
     registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations });

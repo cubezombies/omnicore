@@ -172,7 +172,9 @@ export interface AppApi {
   engineStatus(): Promise<EngineStatus>;
   runDiscoveryNow(): Promise<{ created: number; candidates: number }>;
   listIdeas(): Promise<Idea[]>;
-  produceIdea(ideaId: number): Promise<number>;
+  /** Start a production from an idea. Off-topic ideas are refused ("OFF_TOPIC: ...") unless confirmOffTopic is true. */
+  produceIdea(ideaId: number, confirmOffTopic?: boolean): Promise<number>;
+  ideaRelevance(ideaId: number): Promise<{ onTopic: boolean; keywordHits: string[]; anchorHits: string[]; reason: string }>;
   rejectIdea(ideaId: number, reason: string): Promise<void>;
   listAccounts(): Promise<PlatformAccount[]>;
   addAccount(platform: Platform, handle: string): Promise<PlatformAccount>;
@@ -265,6 +267,7 @@ export const IPC = {
   runDiscoveryNow: 'ops:discovery:run',
   listIdeas: 'ops:ideas:list',
   produceIdea: 'ops:ideas:produce',
+  ideaRelevance: 'ops:ideas:relevance',
   rejectIdea: 'ops:ideas:reject',
   listAccounts: 'accounts:list',
   addAccount: 'accounts:add',

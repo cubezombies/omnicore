@@ -288,6 +288,33 @@ describe('production pipeline', () => {
     expect(r.steps.find((s) => s.step === 'script')!.detail).toContain('fallback');
   }, 60_000);
 
+  it('never falls back for an autonomous production: it stops with the writer error', async () => {
+    providers.writer = new OpenAICompatibleWriter({ baseUrl: 'http://127.0.0.1:9', model: '', timeoutMs: 5000 }) as Writer;
+    providers.fallbackWriter = new ExtractiveWriter();
+    const runner = makeRunner();
+    const p = repo.create(1, 'large language models', null, '', 'explainer', { origin: 'autonomous' });
+    runner.enqueue(p.id);
+    await runner.idle();
+    const r = repo.get(p.id);
+    expect(r.status).toBe('failed');
+    expect(r.storyboard).toBeNull();
+    expect(r.error).toMatch(/never fall back to the deterministic writer/);
+  }, 60_000);
+
+  it('flags a fallback script as a major QA finding instead of passing it silently', async () => {
+    const { runQaChecks } = await import('../src/main/qa/engine');
+    providers.writer = new OpenAICompatibleWriter({ baseUrl: 'http://127.0.0.1:9', model: '', timeoutMs: 5000 }) as Writer;
+    providers.fallbackWriter = new ExtractiveWriter();
+    const runner = makeRunner({ render: async () => { throw new Error('stop'); } });
+    const p = repo.create(1, 'large language models', null, '');
+    runner.enqueue(p.id);
+    await runner.idle();
+    const checks = await runQaChecks({ production: repo.get(p.id), dir, ffmpeg, allowShareAlike: false });
+    const f = checks.find((c) => c.checkId === 'script.fallback')!;
+    expect(f).toMatchObject({ severity: 'major', passed: false, repairAction: 'rescript' });
+    expect(f.message).toMatch(/deterministic fallback writer/);
+  }, 60_000);
+
   it('rerun from a step clears that step and later outputs', async () => {
     const runner = makeRunner();
     const p = repo.create(1, 'large language models', null, '');
@@ -315,5 +342,22 @@ describe('production pipeline', () => {
     const r = repo.get(p.id);
     expect(r.status).toBe('failed');
     expect(r.error).toMatch(/Interrupted/);
+  });
+});
+
+describe('production deletion', () => {
+  it('records the deletion and keeps every earlier audit event for that production number', async () => {
+    const { AuditLedger } = await import('../src/main/audit/ledger');
+    const audit = new AuditLedger(db, fs.mkdtempSync(path.join(os.tmpdir(), 'ev-')));
+    const runner = makeRunner({ audit });
+    const p = repo.create(1, 'deleted topic', null, '');
+    audit.record({ actor: 'test', businessId: 1, type: 'production.started', productionId: p.id, data: {} });
+    runner.delete(p.id);
+    const rows = db.prepare('SELECT type, actor, data FROM audit_events WHERE production_id = ? ORDER BY id').all(p.id) as { type: string; actor: string; data: string }[];
+    expect(rows.map((r) => r.type)).toEqual(['production.started', 'production.deleted']);
+    expect(rows[1].actor).toBe('user');
+    expect(JSON.parse(rows[1].data)).toMatchObject({ topic: 'deleted topic', status: 'queued' });
+    expect(() => repo.get(p.id)).toThrow();
+    expect(audit.verify().ok).toBe(true);
   });
 });

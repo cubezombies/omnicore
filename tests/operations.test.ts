@@ -167,7 +167,7 @@ describe('operating engine', () => {
     new OperatingEngine({
       ops, productions, audit, runner: runner as never, tickMs: 3600_000,
       now: () => new Date(2026, 10, 26, hour),
-      discover: async () => ({ items: 3, candidates: [cand('Low story', 40), cand('Top story', 80), cand('Mid story', 60)], sourceReports: [{ id: 'fake', ok: true, items: 3 }] })
+      discover: async () => ({ items: 3, candidates: [cand('Low AI story', 40), cand('Top AI story', 80), cand('Mid AI story', 60)], sourceReports: [{ id: 'fake', ok: true, items: 3 }] })
     });
 
   it('discovers, selects the best idea and creates a destination-assigned autonomous production', async () => {
@@ -179,10 +179,10 @@ describe('operating engine', () => {
     await engine.stop('test');
     expect(runner.queued).toHaveLength(1);
     const p = productions.get(runner.queued[0]) as Production;
-    expect(p.topic).toBe('Top story');
+    expect(p.topic).toBe('Top AI story');
     expect(p.origin).toBe('autonomous');
     expect(p.destinations[0].platform).toBe('tiktok');
-    expect(ops.listIdeas(brand, 'new').map((i) => i.topic)).toEqual(['Mid story', 'Low story']);
+    expect(ops.listIdeas(brand, 'new').map((i) => i.topic)).toEqual(['Mid AI story', 'Low AI story']);
     expect(audit.events().map((e) => e.type)).toEqual(expect.arrayContaining(['discovery.run', 'idea.discovered', 'idea.selected', 'production.destination']));
     expect(audit.verify().ok).toBe(true);
   });

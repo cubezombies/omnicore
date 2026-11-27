@@ -147,7 +147,7 @@ export class ProductionRepository {
     this.db.exec('BEGIN');
     try {
       const res = this.db
-        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes, mode, origin, idea_id, destinations, format) VALUES (?,?,?,?,?,?,?,?,?)')
+        .prepare("INSERT INTO productions (id, channel_id, content_id, topic, user_notes, mode, origin, idea_id, destinations, format) VALUES ((SELECT max_id + 1 FROM id_high_water WHERE name = 'productions'),?,?,?,?,?,?,?,?,?)")
         .run(channelId, contentId, topic, userNotes, mode, extra.origin ?? 'manual', extra.ideaId ?? null, JSON.stringify(extra.destinations ?? []), extra.format ?? 'short');
       const id = Number(res.lastInsertRowid);
       const ins = this.db.prepare('INSERT INTO production_steps (production_id, step) VALUES (?, ?)');

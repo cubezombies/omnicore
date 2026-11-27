@@ -120,7 +120,21 @@ export function Operations() {
                 <div className="small muted">{i.scoreDetail.notes?.join(' · ')} · {i.signals.length} signal(s): {[...new Set(i.signals.map((s) => s.publisher))].join(', ')}</div>
               </div>
               <span className="track-actions">
-                <button className="secondary" disabled={!!busy} onClick={() => run(`p${i.id}`, () => window.api.produceIdea(i.id), 'Production started — see Studio.')}>Produce now</button>
+                <button className="secondary" disabled={!!busy} onClick={() =>
+                    run(
+                      `p${i.id}`,
+                      async () => {
+                        // Off-topic ideas need an explicit confirmation (the main process refuses them otherwise and records the choice).
+                        const rel = await window.api.ideaRelevance(i.id);
+                        if (!rel.onTopic && !window.confirm(`"${i.topic}" looks off topic for this business: ${rel.reason}.\n\nProduce it anyway?`)) return;
+                        await window.api.produceIdea(i.id, !rel.onTopic);
+                        setMsg('Production started — see Studio.');
+                      }
+                    )
+                  }
+                >
+                  Produce now
+                </button>
                 <button className="ghost" disabled={!!busy} onClick={() => run(`r${i.id}`, () => window.api.rejectIdea(i.id, 'not a fit'))}>Reject</button>
               </span>
             </li>

@@ -230,11 +230,16 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     engineStatus: () => engine.status(cur()),
     runDiscoveryNow: () => engine.runDiscovery(cur()),
     listIdeas: () => ops.listIdeas(cur()),
-    produceIdea: (id) => {
+    produceIdea: (id, confirmOffTopic) => {
       const iid = own('idea', id);
       if (runner.busy()) throw new Error('A production is already running or queued. Try again when it finishes.');
-      return engine.produceIdea(iid, 'user', 'chosen by user');
+      // Off-topic ideas need an explicit confirmation, which is recorded.
+      const rel = engine.ideaRelevance(iid);
+      if (!rel.onTopic && confirmOffTopic !== true) throw new Error(`OFF_TOPIC: This idea looks off topic for this business (${rel.reason}). Confirm to produce it anyway.`);
+      if (!rel.onTopic) audit.record({ actor: 'user', businessId: cur(), type: 'idea.offtopic-confirmed', subjectType: 'idea', subjectId: iid, data: { reason: rel.reason } });
+      return engine.produceIdea(iid, 'user', rel.onTopic ? 'chosen by user' : `chosen by user despite off-topic warning (${rel.reason})`);
     },
+    ideaRelevance: (id) => engine.ideaRelevance(own('idea', id)),
     rejectIdea: (id, reason) => {
       const idea = ops.decideIdea(own('idea', id), 'rejected', `rejected by user: ${v.shortText(reason, 'Reason', 300)}`);
       audit.record({ actor: 'user', businessId: idea.brandId, type: 'idea.rejected', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, reason } });

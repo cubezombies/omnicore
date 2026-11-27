@@ -398,6 +398,20 @@ const MIGRATIONS: string[] = [
     FROM settings s, json_each(json_extract(s.value, '$.pronunciations')) j
     WHERE s.key = 'providers' AND json_valid(s.value) AND trim(COALESCE(json_extract(j.value, '$.term'), '')) <> '' AND trim(COALESCE(json_extract(j.value, '$.say'), '')) <> '';
   `,
+  // v11: production numbers are never reused. SQLite hands a deleted top id to the next insert (production 11 was
+  // three different videos), so a high-water mark is kept, seeded from every production id ever recorded (including
+  // the audit log), and a trigger refuses any insert at or below it.
+  `
+  CREATE TABLE id_high_water (name TEXT PRIMARY KEY, max_id INTEGER NOT NULL);
+  INSERT INTO id_high_water (name, max_id) VALUES ('productions', MAX(
+    COALESCE((SELECT MAX(id) FROM productions), 0),
+    COALESCE((SELECT MAX(production_id) FROM audit_events), 0),
+    COALESCE((SELECT MAX(production_id) FROM ideas), 0)));
+  CREATE TRIGGER productions_ids_never_reused AFTER INSERT ON productions BEGIN
+    SELECT RAISE(ABORT, 'Production numbers are never reused.') WHERE NEW.id <= (SELECT max_id FROM id_high_water WHERE name = 'productions');
+    UPDATE id_high_water SET max_id = NEW.id WHERE name = 'productions';
+  END;
+  `
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

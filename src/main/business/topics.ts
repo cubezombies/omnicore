@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Topic, TopicDraft } from '../../shared/business';
 import { NotFoundError } from '../db/repository';
+import { nicheAnchors } from '../autonomy/relevance';
 
 type Row = Record<string, unknown>;
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
@@ -153,13 +154,15 @@ export class TopicRepository {
   }
 
   /** What autonomous discovery may use: enabled, active, unarchived topics that allow autonomous exploration. */
-  discoveryProfile(businessId: number): { keywords: string[]; exclusions: string[]; approvalKeywords: string[] } {
+  discoveryProfile(businessId: number): { keywords: string[]; exclusions: string[]; approvalKeywords: string[]; anchors: string[] } {
+    const niche = String((this.db.prepare('SELECT niche FROM channels WHERE id = ?').get(businessId) as { niche?: string } | undefined)?.niche ?? '');
     const live = this.list(businessId, false).filter((t) => t.enabled && t.status === 'active');
     const auto = live.filter((t) => t.autonomousOk);
     return {
       keywords: [...new Set(auto.flatMap((t) => [t.name, ...t.keywords]))],
       exclusions: [...new Set(live.flatMap((t) => t.exclusions))],
-      approvalKeywords: [...new Set(live.filter((t) => t.approvalRequired).flatMap((t) => [t.name, ...t.keywords]))]
+      approvalKeywords: [...new Set(live.filter((t) => t.approvalRequired).flatMap((t) => [t.name, ...t.keywords]))],
+      anchors: nicheAnchors(niche)
     };
   }
 }

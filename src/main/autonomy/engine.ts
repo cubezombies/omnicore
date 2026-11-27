@@ -6,13 +6,14 @@ import type { ProductionRepository } from '../db/productions';
 import type { ProductionRunner } from '../pipeline/runner';
 import type { EngineStatus } from '../../shared/operations';
 import type { DiscoveryResult } from './discovery';
+import { topicRelevance, type Relevance } from './relevance';
 
 export interface EngineDeps {
   ops: OperationsRepository;
   productions: ProductionRepository;
   runner: ProductionRunner;
   audit: AuditLedger;
-  discover: (brandId: number, keywords: string[], recentTopics: string[], signal: AbortSignal) => Promise<DiscoveryResult>;
+  discover: (brandId: number, keywords: string[], recentTopics: string[], signal: AbortSignal, anchors?: string[]) => Promise<DiscoveryResult>;
   now?: () => Date;
   tickMs?: number;
   onChange?: () => void;
@@ -117,7 +118,7 @@ export class OperatingEngine {
       const profile = this.d.topics?.discoveryProfile(brandId);
       const keywords = profile?.keywords.length ? profile.keywords : this.d.ops.brandKeywords(brandId);
       const recent = this.d.ops.recentTopics(brandId, 21);
-      const res = await this.d.discover(brandId, keywords, recent, this.discovering.signal);
+      const res = await this.d.discover(brandId, keywords, recent, this.discovering.signal, profile?.anchors ?? []);
       let created = 0;
       for (const c of res.candidates) {
         if (profile && mentionsAny(`${c.topic} ${c.headline}`, profile.exclusions)) continue;
@@ -158,9 +159,22 @@ export class OperatingEngine {
     if (!this.withinHours(brandId) || this.d.runner.busy() || this.productionsToday(brandId) >= s.maxProductionsPerDay) return null;
     // Ideas under topics that require approval are left for the user ("Produce now"); the engine never starts them.
     const needsApproval = this.d.topics?.discoveryProfile(brandId).approvalKeywords ?? [];
-    const best = this.d.ops.listIdeas(brandId, 'new').find((i) => !mentionsAny(`${i.topic} ${i.headline}`, needsApproval));
+    // Off-topic ideas (e.g. discovered before the relevance rule) are never started automatically.
+    const best = this.d.ops.listIdeas(brandId, 'new').find((i) => !mentionsAny(`${i.topic} ${i.headline}`, needsApproval) && this.ideaRelevance(i.id).onTopic);
     if (!best || best.score < s.minIdeaScore) return null;
     return this.produceIdea(best.id, 'engine', `highest-scoring idea (${best.score} ≥ ${s.minIdeaScore})`);
+  }
+
+  /** Whether an idea is on topic for its business (topic, headline and every signal title). */
+  ideaRelevance(ideaId: number): Relevance {
+    const idea = this.d.ops.getIdea(ideaId);
+    const profile = this.d.topics?.discoveryProfile(idea.brandId);
+    const keywords = profile?.keywords.length ? profile.keywords : this.d.ops.brandKeywords(idea.brandId);
+    const r = topicRelevance([idea.topic, idea.headline, ...idea.signals.map((s) => s.title)].join(' \n '), keywords, profile?.anchors ?? []);
+    // Discovery also read the articles' summaries; AI terms it found there (recorded in the score notes) count too.
+    const found = (idea.scoreDetail.notes ?? []).find((n) => n.startsWith('AI terms: '));
+    if (!r.onTopic && found && profile?.anchors.length) return { ...r, onTopic: true, anchorHits: found.slice(10).split(', '), reason: `${found} (in the article summaries)` };
+    return r;
   }
 
   /** Turn an idea into a production with its brand's explicit destinations. Used by the engine and by "Produce now". */
