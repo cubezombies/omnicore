@@ -150,7 +150,8 @@ class Worker {
         });
         this.child!.stdin.write(`${JSON.stringify({ ...req, id })}\n`, 'utf8');
       });
-      this.idle = setTimeout(() => this.stop(), 180_000);
+      // Short hold: the local LLM (Strata) shares this GPU and stalls when it starts a request with no free memory.
+      this.idle = setTimeout(() => this.stop(), 20_000);
       this.idle.unref?.();
       return res;
     });

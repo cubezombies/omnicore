@@ -433,6 +433,9 @@ export interface AudioTrack {
   restrictions: { platforms?: string[]; territories?: string[]; accountTypes?: string[]; notes?: string };
   /** Rights ledger: where the track came from and the evidence that its licence was verified. */
   rights: AudioRights;
+  /** Only 'approved' sounds can be selected, rendered or published (set by a verifier, never by editing). */
+  rightsStatus: 'approved' | 'unverified' | 'quarantined' | 'rejected';
+  quarantineReason: string;
 }
 
 export interface AudioRights {

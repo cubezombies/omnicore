@@ -198,10 +198,10 @@ describe('operating engine', () => {
     await engine.tick(true);
     expect(day.queued).toHaveLength(1);
     day.queued.length = 0; // pretend the first production finished
-    expect(engine.maybeStartProduction(brand)).toBeNull(); // daily limit reached
+    expect(await engine.maybeStartProduction(brand)).toBeNull(); // daily limit reached
 
     ops.saveAutonomy(brand, { ...ops.getAutonomy(brand), maxProductionsPerDay: 5, minIdeaScore: 90 });
-    expect(engine.maybeStartProduction(brand)).toBeNull(); // nothing scores 90
+    expect(await engine.maybeStartProduction(brand)).toBeNull(); // nothing scores 90
   });
 
   it('does nothing while disabled, recovers interrupted runs on start and stops cleanly', async () => {
@@ -235,10 +235,11 @@ describe('QA, music and writer policy', () => {
   });
 
   it('only auto-selects music cleared for embedded commercial use', () => {
-    const t = (usage: AudioTrack['usage'], commercialUse: AudioTrack['commercialUse']) => ({ usage, commercialUse }) as AudioTrack;
+    const t = (usage: AudioTrack['usage'], commercialUse: AudioTrack['commercialUse']) => ({ usage, commercialUse, rightsStatus: 'approved' }) as AudioTrack;
     expect(embeddable(t('embedded', 'yes'))).toBe(true);
     expect(embeddable(t('embedded', 'unknown'))).toBe(false);
     expect(embeddable(t('platform_native', 'yes'))).toBe(false);
+    expect(embeddable({ usage: 'embedded', commercialUse: 'yes', rightsStatus: 'quarantined' } as AudioTrack)).toBe(false); // rights gate
   });
 
   it('never narrates first-person source text and respects the word budget', () => {

@@ -314,6 +314,7 @@ if (!app.requestSingleInstanceLock()) {
     const samplesDir = path.join(dataDir, 'samples');
     // Tokens and developer-app secrets are encrypted with Windows DPAPI via safeStorage; never stored in plain text.
     const publisher = new Publisher({
+      soundRights: (id) => library.revalidate(id),
       db,
       ops,
       productions,
@@ -334,6 +335,11 @@ if (!app.requestSingleInstanceLock()) {
       audit,
       topics,
       discover: (_brandId, keywords, recent, signal, anchors) => discover(defaultDiscoverySources(), keywords, recent, signal, anchors),
+      precheck: (brandId, idea, signal) => runner.evidencePrecheck(idea.topic, idea.mode, brandId, 'standard', signal),
+      writerReady: async () => {
+        const st = await buildProviders(productions.getSettings(), dirs).writer.check(AbortSignal.timeout(15_000));
+        return { ok: st.available, reason: st.detail };
+      },
       onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
     });
     registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations });

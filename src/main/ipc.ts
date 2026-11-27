@@ -30,6 +30,7 @@ import type { PreviewEngine } from '../shared/production';
 import { BusinessContextError, type BusinessContext, type OwnedKind } from './business/context';
 import * as v from './validation';
 import { discoverMusicFor } from './audio/discovery';
+import { MUSIC_DISCOVERY_ENABLED } from './library';
 
 type Handler = (...args: unknown[]) => unknown;
 type InvokeKey = Exclude<keyof AppApi, 'onProductionChanged' | 'onBusinessChanged'>;
@@ -263,6 +264,7 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     },
     discoverMusic: async (m) => {
       // Finds openly licensed instrumental tracks for a mood and imports the ones whose licence checks out.
+      if (!MUSIC_DISCOVERY_ENABLED) throw new Error('Music discovery is switched off after the rights incident of 2026-11-27. Tracks are only accepted when their source of record verifies them.');
       const mood = v.mood(m);
       const s = productions.getSettings();
       const r = await discoverMusicFor(mood, { allowShareAlike: s.allowShareAlike, limit: 4, signal: AbortSignal.timeout(180_000) });

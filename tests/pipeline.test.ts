@@ -272,7 +272,7 @@ describe('production pipeline', () => {
     const p = repo.create(1, 'large language models', null, '');
     runner.enqueue(p.id);
     await runner.idle();
-    expect(repo.get(p.id).error).toMatch(/^Script & storyboard: No LLM server is answering at http:\/\/127\.0\.0\.1:9/);
+    expect(repo.get(p.id).error).toMatch(/^Script & storyboard: The script writer failed \(.*No LLM server is answering at http:\/\/127\.0\.0\.1:9.*Start the writer and retry/);
   }, 60_000);
 
   it('falls back to the deterministic writer and records why when the LLM is down', async () => {

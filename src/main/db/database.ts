@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
  * Ordered schema migrations. Append only: never edit a shipped migration.
  * The number applied is stored in PRAGMA user_version.
  */
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE channels (
     id          INTEGER PRIMARY KEY,
@@ -415,6 +415,43 @@ const MIGRATIONS: string[] = [
   // v12: rights ledger for library sounds (provider, track id, licence URL, source page, evidence hash).
   `
   ALTER TABLE audio_library ADD COLUMN rights TEXT NOT NULL DEFAULT '{}';
+  `,
+  // v13: rights gate (incident 2026-11-27: paid Jamendo Licensing tracks were imported as CC BY from Openverse metadata).
+  // Every library sound has a rights status; only 'approved' sounds can be selected, rendered or published. Decisions
+  // are append-only evidence. Every non-generated sound is quarantined and each production that used one gets an open
+  // rights incident. Nothing is deleted.
+  `
+  ALTER TABLE audio_library ADD COLUMN rights_status TEXT NOT NULL DEFAULT 'unverified' CHECK (rights_status IN ('approved','unverified','quarantined','rejected'));
+  ALTER TABLE audio_library ADD COLUMN quarantine_reason TEXT NOT NULL DEFAULT '';
+  CREATE TABLE audio_rights_decisions (
+    id                INTEGER PRIMARY KEY,
+    track_id          INTEGER,
+    provider          TEXT NOT NULL DEFAULT '',
+    provider_track_id TEXT NOT NULL DEFAULT '',
+    title             TEXT NOT NULL DEFAULT '',
+    decision          TEXT NOT NULL,
+    verifier          TEXT NOT NULL,
+    reasons           TEXT NOT NULL DEFAULT '[]',
+    evidence          TEXT NOT NULL DEFAULT '{}',
+    evidence_sha256   TEXT NOT NULL DEFAULT '',
+    decided_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE TRIGGER audio_rights_no_update BEFORE UPDATE ON audio_rights_decisions BEGIN SELECT RAISE(ABORT, 'audio rights decisions are append-only'); END;
+  CREATE TRIGGER audio_rights_no_delete BEFORE DELETE ON audio_rights_decisions BEGIN SELECT RAISE(ABORT, 'audio rights decisions are append-only'); END;
+  UPDATE audio_library SET rights_status = 'approved' WHERE origin = 'generated';
+  UPDATE audio_library SET rights_status = 'quarantined', quarantine_reason = 'Rights incident 2026-11-27: imported from index metadata (Openverse) without verification at the source of record; paid Jamendo Licensing catalogue tracks were listed as CC BY.' WHERE origin <> 'generated';
+  INSERT INTO audio_rights_decisions (track_id, provider, provider_track_id, title, decision, verifier, reasons)
+    SELECT id, COALESCE(json_extract(rights, '$.provider'), origin), COALESCE(json_extract(rights, '$.providerTrackId'), ''), title,
+      CASE WHEN origin = 'generated' THEN 'approved' ELSE 'quarantined' END,
+      CASE WHEN origin = 'generated' THEN 'omnicore-generated' ELSE 'incident-2026-11-27' END,
+      CASE WHEN origin = 'generated' THEN '["synthesised by Omnicore; no third-party material"]' ELSE json_array(quarantine_reason) END
+    FROM audio_library;
+  INSERT INTO incidents (kind, production_id, asset_key, description, business_id)
+    SELECT DISTINCT 'rights_complaint', a.production_id, a.path,
+      'Music "' || l.title || '" is quarantined (rights incident 2026-11-27): it was imported as CC BY from index metadata and may be a paid Jamendo Licensing track. Do not publish this video; remove any post that uses it.',
+      p.channel_id
+    FROM production_assets a JOIN audio_library l ON a.path = 'library:' || l.file JOIN productions p ON p.id = a.production_id
+    WHERE l.rights_status = 'quarantined';
   `
 ];
 

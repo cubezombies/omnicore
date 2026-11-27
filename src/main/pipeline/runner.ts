@@ -33,6 +33,7 @@ import { DEFAULT_SOUND_PROFILE, PRODUCTION_FORMATS, type MusicOverride, type Sou
 import { runResearch, type EngineOptions } from '../research/engine';
 import type { RawSource } from '../research/dedupe';
 import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS } from '../../shared/production';
+import { stopKokoroGpuWorkers } from '../providers/kokoroGpu';
 
 export interface RunnerDeps {
   repo: ProductionRepository;
@@ -140,6 +141,24 @@ export class ProductionRunner {
     this.d.repo.update(id, { status: 'queued', error: null });
     this.d.emit(id);
     void this.kick();
+  }
+
+  /**
+   * The research and evidence gate a production would run, without creating one: is there enough independent
+   * evidence for this topic in this format? Used to set aside single-source ideas before they become failed productions.
+   */
+  async evidencePrecheck(topic: string, mode: 'news' | 'explainer', channelId: number, format: 'short' | 'standard', signal: AbortSignal): Promise<{ ok: boolean; reason: string }> {
+    const settings = this.d.settings();
+    const providers = this.d.providers(settings);
+    const result = await runResearch({ topic, mode, windowDays: settings.newsWindowDays }, providers.research, [], signal, { fetchPage: this.d.fetchPage });
+    if (!result.sources.length) return { ok: false, reason: `no usable sources found (${mode})` };
+    const budget = wordBudget(format, effectiveWordsPerSec(settings));
+    const brief = buildEvidenceBrief(topic, result.sources, this.d.channel(channelId).niche, mode, budget.maxWords, format, budget.minWords);
+    const fmt = PRODUCTION_FORMATS[format];
+    const used = new Set((brief.claims ?? []).flatMap((cl) => cl.sourceIds)).size;
+    const claims = brief.claims?.length ?? 0;
+    const ok = claims >= fmt.minClaims && used >= fmt.minSources;
+    return { ok, reason: `${claims} claims from ${used} independent sources (${fmt.label} needs ${fmt.minClaims} from ${fmt.minSources})` };
   }
 
   /** Resume a failed/cancelled production from its first unfinished step. */
@@ -367,6 +386,11 @@ export class ProductionRunner {
       const ch = this.d.channel(p.channelId);
       const input = { brief: p.brief, sources: p.sources, channelName: ch.name, instructions: ch.instructions };
       const primary = c.providers.writer;
+      // The LLM shares the GPU with the Kokoro voice: free it before writing so the LLM never starts out of memory.
+      stopKokoroGpuWorkers();
+      // Detect a crashed or unloaded LLM before sending a request (a clear error, and no fallback for autonomous work).
+      const health = await primary.check(c.signal);
+      if (!health.available && (p.origin === 'autonomous' || !c.providers.fallbackWriter)) throw new Error(`The script writer failed (${primary.label}: ${health.detail}). ${p.origin === 'autonomous' ? 'Autonomous productions never fall back to the deterministic writer; fix' : 'Start'} the writer and retry.`);
       c.progress(0.1, `Writing with ${primary.label}…`);
       let storyboard: Storyboard;
       try {
@@ -425,6 +449,8 @@ export class ProductionRunner {
       }
       const total = this.d.repo.assets(c.id, 'narration').reduce((s, a) => s + Number(a.meta.durationSec), 0);
       this.audit({ type: 'narration.completed', productionId: c.id, data: { provider: n.id, voice: this.d.repo.assets(c.id, 'narration')[0]?.meta.voice, seconds: +total.toFixed(2), fallback: fallbackNote || undefined } });
+      // Give the GPU back to the local LLM straight away (the next production's script needs it).
+      stopKokoroGpuWorkers();
       c.progress(1, `${scenes.length} clips · ${total.toFixed(1)}s · ${n.label}${total > PRODUCTION_FORMATS[this.d.repo.get(c.id).format].maxSec + 2 ? ` · over ${PRODUCTION_FORMATS[this.d.repo.get(c.id).format].maxSec} s: shorten the script rather than speeding up the voice` : ''}${fallbackNote}`);
     },
 
@@ -626,7 +652,7 @@ export class ProductionRunner {
         this.refreshPublishing(c);
         c.progress(Math.min(0.9, round * 0.3), `QA round ${round}: inspecting…`);
         const p = this.d.repo.get(c.id);
-        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal, pronunciation: this.d.pronunciationCheck?.(p), musicRequired: this.musicRequired(p) });
+        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal, pronunciation: this.d.pronunciationCheck?.(p), musicRequired: this.musicRequired(p), soundRights: this.d.library ? (id) => this.d.library!.revalidate(id) : undefined });
         const sum = summarise(results);
         const repairs = [...new Set(results.filter((r) => !r.passed && r.repairAction && (r.severity === 'critical' || r.severity === 'major')).map((r) => r.repairAction!))];
         const canRepair = repairs.length > 0 && round <= maxRounds;

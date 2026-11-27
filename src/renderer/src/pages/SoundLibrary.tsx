@@ -57,6 +57,7 @@ function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
             </div>
           )}
           {(t.restrictions.platforms?.length || t.usage === 'platform_native') && <div className="small field-error">{t.usage === 'platform_native' ? 'Platform-only sound: never mixed into exported videos.' : `Only for: ${t.restrictions.platforms!.join(', ')}`}</div>}
+          {t.rightsStatus !== 'approved' && <div className="small field-error">Rights {t.rightsStatus}: never selected, rendered or published.{t.quarantineReason ? ` ${t.quarantineReason}` : ''}</div>}
           <div className={t.commercialUse === 'yes' ? 'small muted' : 'small field-error'}>{t.commercialUse === 'yes' ? 'Cleared for commercial videos (used automatically)' : t.commercialUse === 'no' ? 'Not for commercial use: never used automatically' : 'Commercial use not confirmed: never used automatically'}</div>
         </div>
         <audio controls preload="none" src={libraryUrl(t.file)} aria-label={`Preview ${t.title}`} />
@@ -248,6 +249,7 @@ export function SoundLibraryPage() {
       <SoundProfileCard />
       <section className="card">
         <h2>Find licensed music</h2>
+        <p className="small field-error">Switched off after the rights incident of 27 Nov 2026: index metadata listed paid Jamendo Licensing tracks as CC BY. Tracks are only accepted when their source of record verifies the exact file and licence.</p>
         <p className="muted small">
           Searches Openverse for instrumental tracks whose licence allows commercial use and syncing to video (CC0, public domain, CC BY). Non-commercial, no-derivatives, share-alike and unclear licences are refused. Each track's licence record is kept as evidence; CC BY tracks are credited in every description. TikTok's Commercial Music Library is not used here: its sounds can't be added to exported videos.
         </p>

@@ -4,7 +4,7 @@ import type { Publisher } from '../publishing/publisher';
 import type { OperationsRepository } from '../db/operations';
 import type { ProductionRepository } from '../db/productions';
 import type { ProductionRunner } from '../pipeline/runner';
-import type { EngineStatus } from '../../shared/operations';
+import type { EngineStatus, Idea } from '../../shared/operations';
 import type { DiscoveryResult } from './discovery';
 import { topicRelevance, type Relevance } from './relevance';
 
@@ -21,6 +21,13 @@ export interface EngineDeps {
   publisher?: Pick<Publisher, 'verifyPending' | 'hasUserApprovedPublicPost' | 'blockers' | 'publish'>;
   /** Business topics steer discovery (optional so older tests can omit it). */
   topics?: Pick<TopicRepository, 'discoveryProfile'>;
+  /**
+   * Before a production is created: does independent evidence for this idea exist (the same research and evidence
+   * gate the production would run)? Ideas that fail are set aside instead of becoming failed productions.
+   */
+  precheck?: (brandId: number, idea: Idea, signal: AbortSignal) => Promise<{ ok: boolean; reason: string }>;
+  /** Is the script writer (the local LLM) loaded and answering? Nothing starts while it is down. */
+  writerReady?: () => Promise<{ ok: boolean; reason: string }>;
 }
 
 /** What the operating engine cannot do on its own — shown in the UI so nobody assumes 24/7 operation. */
@@ -33,6 +40,13 @@ export const ENGINE_LIMITATIONS = [
 
 const MAX_ATTEMPTS = 3;
 const RETRY_AFTER_MS = 10 * 60_000;
+/** Ideas checked for independent evidence per scheduling pass (each check runs the research providers). */
+const PRECHECKS_PER_TICK = 3;
+
+/** Failures that will happen again on retry (the story, not the machine): never retried. */
+export const PERMANENT_FAILURE = /Not enough evidence|No news coverage|No usable sources|off topic|not licensed|BLOCKED|never fall back|story is not|Storyboard needs/i;
+/** Failures caused by the local LLM being down or overloaded: retried once it answers again. */
+export const WRITER_FAILURE = /script writer failed|no model loaded|LLM server|HTTP 50[0-9]|ECONNREFUSED|No LLM server is answering|timed out/i;
 
 /**
  * The autonomous operating engine. Lives in the main process (independent of any window):
@@ -95,8 +109,9 @@ export class OperatingEngine {
         const last = this.d.ops.lastRun(`discovery:${brandId}`);
         const due = !last || this.now().getTime() - Date.parse(`${last.startedAt}Z`.replace('ZZ', 'Z')) >= s.discoveryEveryHours * 3600_000;
         if (due) await this.runDiscovery(brandId);
-        this.retryFailed(brandId);
-        this.maybeStartProduction(brandId);
+        const writer = await this.checkWriter();
+        this.retryFailed(brandId, writer);
+        if (writer) await this.maybeStartProduction(brandId);
         await this.autoPublish(brandId);
       }
       this.lastError = null;
@@ -153,16 +168,35 @@ export class OperatingEngine {
     return this.d.ops.autonomousProductionsSince(start, brandId);
   }
 
-  /** Editorial selection: start the best-scoring new idea if limits, hours and the queue allow. */
-  maybeStartProduction(brandId: number): number | null {
+  /**
+   * Editorial selection: the best-scoring new idea that is on topic, needs no approval, has no production yet and has
+   * independent evidence (checked before any production exists), if limits, hours and the queue allow.
+   */
+  async maybeStartProduction(brandId: number): Promise<number | null> {
     const s = this.d.ops.getAutonomy(brandId);
     if (!this.withinHours(brandId) || this.d.runner.busy() || this.productionsToday(brandId) >= s.maxProductionsPerDay) return null;
     // Ideas under topics that require approval are left for the user ("Produce now"); the engine never starts them.
     const needsApproval = this.d.topics?.discoveryProfile(brandId).approvalKeywords ?? [];
     // Off-topic ideas (e.g. discovered before the relevance rule) are never started automatically.
-    const best = this.d.ops.listIdeas(brandId, 'new').find((i) => !mentionsAny(`${i.topic} ${i.headline}`, needsApproval) && this.ideaRelevance(i.id).onTopic);
-    if (!best || best.score < s.minIdeaScore) return null;
-    return this.produceIdea(best.id, 'engine', `highest-scoring idea (${best.score} ≥ ${s.minIdeaScore})`);
+    const candidates = this.d.ops
+      .listIdeas(brandId, 'new')
+      .filter((i) => i.score >= s.minIdeaScore && !i.productionId && !mentionsAny(`${i.topic} ${i.headline}`, needsApproval) && this.ideaRelevance(i.id).onTopic);
+    let checked = 0;
+    for (const idea of candidates) {
+      if (this.d.precheck) {
+        if (checked++ >= PRECHECKS_PER_TICK) break;
+        const pre = await this.d.precheck(brandId, idea, AbortSignal.timeout(180_000)).catch((e: unknown) => ({ ok: false, reason: `check failed: ${e instanceof Error ? e.message : String(e)}` }));
+        if (!pre.ok) {
+          // A missing-evidence verdict is final for this idea; a failed check (network) leaves it for the next pass.
+          if (!pre.reason.startsWith('check failed')) this.d.ops.decideIdea(idea.id, 'rejected', `set aside before production: ${pre.reason}`);
+          this.d.audit.record({ actor: 'engine', businessId: brandId, type: 'idea.precheck', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, ok: false, reason: pre.reason } });
+          continue;
+        }
+        this.d.audit.record({ actor: 'engine', businessId: brandId, type: 'idea.precheck', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, ok: true, reason: pre.reason } });
+      }
+      return this.produceIdea(idea.id, 'engine', `highest-scoring idea with independent evidence (${idea.score} ≥ ${s.minIdeaScore})`);
+    }
+    return null;
   }
 
   /** Whether an idea is on topic for its business (topic, headline and every signal title). */
@@ -180,6 +214,11 @@ export class OperatingEngine {
   /** Turn an idea into a production with its brand's explicit destinations. Used by the engine and by "Produce now". */
   produceIdea(ideaId: number, actor: string, reason: string): number {
     const idea = this.d.ops.getIdea(ideaId);
+    // Duplicate prevention: one live production per idea.
+    if (idea.productionId) {
+      const existing = this.d.productions.list(idea.brandId).find((x) => x.id === idea.productionId);
+      if (existing && (existing.status === 'queued' || existing.status === 'running' || existing.status === 'completed')) throw new Error(`This idea already has production #${existing.id} (${existing.status}).`);
+    }
     const destinations = this.d.ops.resolveDestinations(idea.brandId);
     const p = this.d.productions.create(idea.brandId, idea.topic, null, '', idea.mode, { origin: 'autonomous', ideaId: idea.id, destinations, format: 'standard' });
     this.d.ops.decideIdea(idea.id, 'selected', reason, p.id);
@@ -189,8 +228,23 @@ export class OperatingEngine {
     return p.id;
   }
 
-  /** Keep idea status in step with its production; retry transient failures a limited number of times. */
-  retryFailed(brandId: number): void {
+  private writerDown: string | null = null;
+  /** Local LLM health, recorded once per outage (and once on recovery) instead of failing productions. */
+  async checkWriter(): Promise<boolean> {
+    if (!this.d.writerReady) return true;
+    const r = await this.d.writerReady().catch((e: unknown) => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+    if (!r.ok && this.writerDown === null) this.d.audit.record({ actor: 'engine', type: 'writer.down', data: { reason: r.reason, action: 'productions paused until the writer answers again' } });
+    if (r.ok && this.writerDown !== null) this.d.audit.record({ actor: 'engine', type: 'writer.recovered', data: { downReason: this.writerDown } });
+    this.writerDown = r.ok ? null : r.reason;
+    return r.ok;
+  }
+
+  /**
+   * Keep idea status in step with its production. Permanent failures (missing evidence, no coverage) are not retried;
+   * writer failures are retried only once the writer answers again; others back off 10, 20, 40 minutes; 3 attempts.
+   */
+  retryFailed(brandId: number, writerOk = true): void {
+    let retried = false;
     for (const p of this.d.productions.list(brandId).filter((x) => x.origin === 'autonomous' && x.ideaId)) {
       const idea = this.d.ops.getIdea(p.ideaId!);
       if (p.status === 'completed' && idea.status === 'selected') {
@@ -200,8 +254,17 @@ export class OperatingEngine {
       if ((p.status === 'failed' || p.status === 'cancelled') && idea.status === 'selected') {
         const failedStep = p.steps.find((st) => st.status === 'failed' || st.status === 'pending');
         const attempts = failedStep?.attempts ?? 0;
-        const waited = this.now().getTime() - Date.parse(p.updatedAt) >= RETRY_AFTER_MS;
-        if (attempts < MAX_ATTEMPTS && waited && !this.d.runner.busy()) {
+        const error = p.error ?? '';
+        if (PERMANENT_FAILURE.test(error)) {
+          this.d.ops.decideIdea(idea.id, 'failed', `not retried (permanent): ${error}`);
+          this.d.audit.record({ actor: 'engine', type: 'idea.failed', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { error, permanent: true } });
+          continue;
+        }
+        if (WRITER_FAILURE.test(error) && !writerOk) continue; // wait for the LLM; does not use up attempts
+        const waited = this.now().getTime() - Date.parse(p.updatedAt) >= RETRY_AFTER_MS * 2 ** Math.max(0, attempts - 1);
+        // One retry per pass, so a failing job never crowds out new work.
+        if (attempts < MAX_ATTEMPTS && waited && !retried && !this.d.runner.busy()) {
+          retried = true;
           this.d.audit.record({ actor: 'engine', type: 'production.retry', productionId: p.id, data: { step: failedStep?.step, attempts, error: p.error } });
           this.d.runner.retry(p.id);
         } else if (attempts >= MAX_ATTEMPTS) {
