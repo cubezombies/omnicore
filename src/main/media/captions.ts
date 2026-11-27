@@ -30,7 +30,8 @@ export function buildCues(scenes: SceneTiming[]): CaptionCue[] {
       if (!group.length) return;
       const start = sc.offset + group[0].start;
       const end = Math.min(sc.offset + group[group.length - 1].end, sc.offset + sc.duration);
-      cues.push({ start, end: Math.max(end, start + 0.2), text: group.map((w) => w.text).join(' ') });
+      // A doubled stop in a script ("etc..") is shown once; a real ellipsis ("...") is kept.
+      cues.push({ start, end: Math.max(end, start + 0.2), text: group.map((w) => w.text).join(' ').replace(/(?<!\.)\.\.(?!\.)/g, '.') });
       group = [];
     };
     for (const w of sc.words) {

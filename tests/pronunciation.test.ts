@@ -190,3 +190,13 @@ describe('re-voice validation', () => {
     expect(() => sceneList(['1'])).toThrow(/non-negative/);
   });
 });
+
+describe('doubled full stops', () => {
+  it('collapses "etc.." in source text and captions, keeping a real ellipsis', async () => {
+    const { cleanText } = await import('../src/main/providers/text');
+    const { buildCues } = await import('../src/main/media/captions');
+    expect(cleanText('database operations, etc. (see below). Wait...')).toBe('database operations, etc. Wait...');
+    const cues = buildCues([{ offset: 0, duration: 2, words: [{ text: 'operations,', start: 0, end: 0.5 }, { text: 'etc..', start: 0.5, end: 1 }, { text: 'so...', start: 1, end: 1.5 }] }] as never);
+    expect(cues.map((c) => c.text)).toEqual(['operations,', 'etc.', 'so...']);
+  });
+});

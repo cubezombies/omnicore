@@ -13,7 +13,8 @@ export function cleanText(t: string): string {
   let s = t.replace(/\[\d+\]|\[citation needed\]/gi, ' ');
   // Drop parentheticals (pronunciations, dates in brackets), innermost first.
   for (let i = 0; i < 3; i++) s = s.replace(/\s*\([^()]*\)/g, '');
-  return s.replace(/\s+/g, ' ').replace(/\s+([,.;:!?])/g, '$1').trim();
+  // Removing "(…)" after an abbreviation leaves a doubled stop ("etc. (see x)." → "etc.."); an ellipsis is kept.
+  return s.replace(/\s+/g, ' ').replace(/\s+([,.;:!?])/g, '$1').replace(/(?<!\.)\.\.(?!\.)/g, '.').trim();
 }
 
 export function splitSentences(t: string): string[] {
