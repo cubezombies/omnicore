@@ -16,7 +16,8 @@ export function splitForSpeech(text: string): string[] {
   return text
     .replace(/\s+/g, ' ')
     .trim()
-    .split(/(?<=[.!?])\s+/)
+    // Sentence ends, but not after titles and abbreviations ("Dr. Chen", "e.g. this") or single initials ("J. Smith").
+    .split(/(?<!\b(?:Dr|Mr|Mrs|Ms|Prof|Jr|Sr|St|vs|etc|approx|e\.g|i\.e|[A-Z])\.)(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
@@ -120,7 +121,7 @@ export class PiperNarration implements NarrationProvider {
     fs.mkdirSync(partsDir, { recursive: true });
     const parts = sentences.map((_, i) => path.join(partsDir, `${i}.wav`));
     // Piper reads the respelled text; caption timings are still estimated from the original sentences.
-    const lines = sentences.map((s, i) => JSON.stringify({ text: spokenText(speechTokens(s, this.pronunciations)), output_file: parts[i] })).join('\n') + '\n';
+    const lines = sentences.map((s, i) => JSON.stringify({ text: spokenText(speechTokens(s, this.pronunciations, { years: true })), output_file: parts[i] })).join('\n') + '\n';
     try {
       await new Promise<void>((resolve, reject) => {
         if (signal.aborted) return reject(new CancelledError());

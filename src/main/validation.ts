@@ -158,6 +158,7 @@ export function settings(v: unknown): ProviderSettings {
     piperVoice: filePath(o.piperVoice, 'Piper voice', /\.onnx$/i),
     sherpaVoice: o.sherpaVoice as ProviderSettings['sherpaVoice'],
     sentencePauseSec: num(o.sentencePauseSec, 'Sentence pause', 0.15, 0.8),
+    kokoroBackend: o.kokoroBackend === 'gpu' ? 'gpu' : 'sherpa',
     pronunciations: pronunciations(o.pronunciations),
     voiceWordsPerSec: num(o.voiceWordsPerSec, 'Voice speed', 0, 5),
     visuals: [...new Set(o.visuals as ProviderSettings['visuals'])],
@@ -402,6 +403,15 @@ export function topicDraft(v: unknown): TopicDraft {
 export function idList(v: unknown): number[] {
   if (!Array.isArray(v) || v.length > 500) throw new ValidationError('Expected a list of ids');
   return v.map((x) => id(x));
+}
+
+/** Scene indexes are zero-based (the first scene is 0). */
+export function sceneList(v: unknown): number[] {
+  if (!Array.isArray(v) || v.length > 200) throw new ValidationError('Expected a list of scenes');
+  return v.map((x) => {
+    if (typeof x !== 'number' || !Number.isInteger(x) || x < 0 || x > 999) throw new ValidationError('Scene must be a non-negative integer');
+    return x;
+  });
 }
 
 // ---- pronunciation ---------------------------------------------------------------------

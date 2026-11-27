@@ -330,6 +330,11 @@ export interface ProviderSettings {
   sherpaVoice: KokoroVoiceId;
   /** Target pause between sentences, in seconds (0.15–0.8). */
   sentencePauseSec: number;
+  /**
+   * How Kokoro voices are run: 'sherpa' (sherpa-onnx on the CPU, built in) or 'gpu' (Kokoro's reference pipeline,
+   * an optional local install). Same model and voices; only switched by the user.
+   */
+  kokoroBackend: 'sherpa' | 'gpu';
   /** Extra pronunciations (term → how to say it), applied before the built-in ones. */
   pronunciations: Pronunciation[];
   /** Measured speaking speed of the selected voice (words/s), from the last voice sample; 0 = unknown. */
@@ -368,6 +373,7 @@ export const DEFAULT_SETTINGS: ProviderSettings = {
   /** AI, Actually's presenter voice. Applies to fresh installs only: a saved choice is never overwritten. */
   sherpaVoice: 'af_heart',
   sentencePauseSec: 0.32,
+  kokoroBackend: 'sherpa',
   pronunciations: [],
   voiceWordsPerSec: 0,
   visuals: ['wikimedia-commons', 'openverse', 'graphics', 'title-card'],
@@ -456,6 +462,10 @@ export const sampleUrl = (file: string): string => `${MEDIA_SCHEME}://sample/${e
 
 /** Short neutral line for auditioning voices: a brand name, a number, an acronym and plain speech. */
 export const VOICE_PREVIEW_TEXT = "Hello, and welcome to AI, Actually. Today we look at how one open model handles 30 languages, and why clear, careful reporting still matters.";
+
+/** A longer audition: questions, a list, numbers, acronyms and a change of tone, to judge flow rather than one sentence. */
+export const VOICE_PASSAGE_TEXT =
+  "So why does the chip matter? Because NVIDIA's GPUs, not CPUs, now train almost every large model. A single RTX 5070 has 12 gigabytes of VRAM, and developers program it with CUDA. On March 3, 2026, one company reported $4.5B in revenue, up 38%. Here's the part nobody tells you: the models didn't get smarter. They got bigger. And honestly? That's both exciting and a little worrying.";
 
 export type PreviewEngine = 'sherpa' | 'piper' | 'windows-sapi';
 

@@ -10,19 +10,20 @@ export interface PreviewStyle {
   speechRate: number;
   pauseSec: number;
   pronunciations: unknown;
+  kokoroBackend?: string;
 }
 
 /** Builds the narrator for a preview from a copy of the settings with only the engine and voice swapped; nothing is saved. */
 export const previewNarrator =
   (getSettings: () => ProviderSettings, dirs: ProviderDirs, make: typeof narrator = narrator) =>
-  (engine: PreviewEngine, voice: string, pronunciations?: Pronunciation[]): NarrationProvider => {
-    const s = { ...getSettings(), ...(pronunciations ? { pronunciations } : {}) };
+  (engine: PreviewEngine, voice: string, pronunciations?: Pronunciation[], kokoroBackend?: ProviderSettings['kokoroBackend']): NarrationProvider => {
+    const s = { ...getSettings(), ...(pronunciations ? { pronunciations } : {}), ...(kokoroBackend ? { kokoroBackend } : {}) };
     const copy: ProviderSettings =
       engine === 'sherpa' ? { ...s, narration: 'sherpa', sherpaVoice: voice as KokoroVoiceId } : engine === 'piper' ? { ...s, narration: 'piper', piperVoice: voice } : { ...s, narration: 'windows-sapi', voice };
     return make(copy, dirs);
   };
 
-export const previewStyle = (s: ProviderSettings): PreviewStyle => ({ speechRate: s.speechRate, pauseSec: s.sentencePauseSec, pronunciations: s.pronunciations });
+export const previewStyle = (s: ProviderSettings): PreviewStyle => ({ speechRate: s.speechRate, pauseSec: s.sentencePauseSec, pronunciations: s.pronunciations, kokoroBackend: s.kokoroBackend });
 
 const PREFIX = 'preview-';
 /** Keep at most this many cached previews (one per voice/style); older ones are removed. */
@@ -44,12 +45,12 @@ export class VoicePreviews {
 
   constructor(
     private readonly dir: string,
-    private readonly make: (engine: PreviewEngine, voice: string, pronunciations?: Pronunciation[]) => NarrationProvider,
+    private readonly make: (engine: PreviewEngine, voice: string, pronunciations?: Pronunciation[], kokoroBackend?: ProviderSettings['kokoroBackend']) => NarrationProvider,
     private readonly style: () => PreviewStyle
   ) {}
 
-  key(engine: PreviewEngine, voice: string, say?: { text: string; pronunciations: Pronunciation[] }): string {
-    const st = this.style();
+  key(engine: PreviewEngine, voice: string, say?: { text: string; pronunciations: Pronunciation[] }, kokoroBackend?: ProviderSettings['kokoroBackend']): string {
+    const st = { ...this.style(), ...(engine === 'sherpa' && kokoroBackend ? { kokoroBackend } : {}) };
     const what = say ? { text: say.text, pron: say.pronunciations } : { text: VOICE_PREVIEW_TEXT };
     return crypto.createHash('sha256').update(JSON.stringify({ v: 1, engine, voice, ...what, st })).digest('hex').slice(0, 24);
   }
@@ -58,18 +59,25 @@ export class VoicePreviews {
    * Preview a voice. With `say`, speak that text (a word or sentence) using exactly those dictionary entries:
    * this is how pronunciation corrections are auditioned before they are saved.
    */
-  preview(engine: PreviewEngine, voice: string, signal: AbortSignal = AbortSignal.timeout(180_000), say?: { text: string; pronunciations: Pronunciation[] }): Promise<VoicePreview> {
+  preview(
+    engine: PreviewEngine,
+    voice: string,
+    signal: AbortSignal = AbortSignal.timeout(180_000),
+    say?: { text: string; pronunciations: Pronunciation[] },
+    /** Audition Kokoro on an engine that is not saved yet (nothing is saved). */
+    kokoroBackend?: ProviderSettings['kokoroBackend']
+  ): Promise<VoicePreview> {
     if (!voice) return Promise.reject(new Error('Choose a specific voice to preview.'));
     if (say && !say.text.trim()) return Promise.reject(new Error('Nothing to say.'));
-    const key = this.key(engine, voice, say);
+    const key = this.key(engine, voice, say, kokoroBackend);
     const running = this.inflight.get(key);
     if (running) return running;
-    const p = this.run(engine, voice, key, signal, say).finally(() => this.inflight.delete(key));
+    const p = this.run(engine, voice, key, signal, say, kokoroBackend).finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);
     return p;
   }
 
-  private async run(engine: PreviewEngine, voice: string, key: string, signal: AbortSignal, say?: { text: string; pronunciations: Pronunciation[] }): Promise<VoicePreview> {
+  private async run(engine: PreviewEngine, voice: string, key: string, signal: AbortSignal, say?: { text: string; pronunciations: Pronunciation[] }, kokoroBackend?: ProviderSettings['kokoroBackend']): Promise<VoicePreview> {
     const wav = path.join(this.dir, `${PREFIX}${key}.wav`);
     const meta = path.join(this.dir, `${PREFIX}${key}.json`);
     if (fs.existsSync(wav) && fs.existsSync(meta)) {
@@ -83,7 +91,7 @@ export class VoicePreviews {
       }
     }
 
-    const n = this.make(engine, voice, say?.pronunciations);
+    const n = this.make(engine, voice, say?.pronunciations, kokoroBackend);
     const status = await n.check(signal);
     if (!status.available) throw new Error(`Voice unavailable: ${status.detail}`);
     fs.mkdirSync(this.dir, { recursive: true });

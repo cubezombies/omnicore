@@ -5,7 +5,8 @@ import type { Pronunciation, ProviderStatus } from '../../shared/production';
 import { speechTokens, spokenText, type SpeechToken } from './pronunciation';
 import type { WordTiming } from '../media/captions';
 import { CancelledError } from '../media/ffmpeg';
-import { wavDurationSec } from '../media/wav';
+import { readWavPcm, wavDurationSec } from '../media/wav';
+import { shapePauses } from './speechTiming';
 import { ProviderUnavailableError, type NarrationProvider, type NarrationResult } from './types';
 
 // Windows' built-in speech engine via PowerShell. SpeakProgress events give
@@ -160,7 +161,9 @@ export class SapiNarration implements NarrationProvider {
       const raw = parsed.words ? (Array.isArray(parsed.words) ? parsed.words : [parsed.words]) : [];
       const durationSec = wavDurationSec(outWav);
       if (durationSec < 0.2) throw new Error('Windows speech produced an empty recording.');
-      return { durationSec, words: timingsForTokens(tokens, raw, durationSec), voice: parsed.voice };
+      // Windows voices pause up to a second at commas and sentence ends (measured); trim those silences to natural lengths.
+      const shaped = shapePauses(readWavPcm(outWav), timingsForTokens(tokens, raw, durationSec), { sentence: 0.42, clause: 0.22, word: 0.1 }, outWav);
+      return { durationSec: shaped.durationSec, words: shaped.words, voice: parsed.voice };
     } finally {
       fs.rmSync(textFile, { force: true });
     }

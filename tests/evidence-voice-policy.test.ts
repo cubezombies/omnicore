@@ -126,12 +126,12 @@ describe('script claim rules', () => {
 describe('pronunciation', () => {
   it('spells acronyms, expands units and versions, keeps word-like caps', () => {
     const say = (t: string) => spokenText(speechTokens(t));
-    expect(say('The GPU runs LLMs via an API.')).toBe('The G P U runs L L Ms via an A-P-I.');
+    expect(say('The GPU runs LLMs via an API.')).toBe("The G P U runs L L M's via an A-P-I.");
     expect(say('Can AI draft tokens? Jalapeño chips.')).toBe('Can AI draft tokens? Jalapenyo chips.');
     expect(say('NVIDIA H100 is 30x faster, costs $40K, uses 80% less power in v2.')).toBe('Envidia H 100 is 30 times faster, costs 40 thousand dollars, uses 80 percent less power in version 2.');
     expect(say('NASA uses RAM and RAG on arXiv, e.g. GPT-4o.')).toBe('NASA uses RAM and rag on archive, for example G P T four oh.');
     expect(say('Llama 3 has 70B parameters.')).toBe('Llama 3 has 70 billion parameters.');
-    expect(spellAcronym('TPUs')).toBe('T P Us');
+    expect(spellAcronym('TPUs')).toBe("T P U's");
   });
   it('user overrides win and captions keep the original words', () => {
     const t = speechTokens('Omnicore uses Kokoro.', [{ term: 'Omnicore', say: 'omni core' }, { term: 'kokoro', say: 'koh koh roh' }]);

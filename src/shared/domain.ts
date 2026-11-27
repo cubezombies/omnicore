@@ -151,7 +151,10 @@ export interface AppApi {
   /** Synthesise a short technical sample with the current narration settings and measure its speaking speed. */
   generateVoiceSample(): Promise<VoiceSample>;
   /** Synthesise (or reuse) a short preview of one voice. Never changes settings. */
-  previewVoice(engine: PreviewEngine, voice: string): Promise<VoicePreview>;
+  /** Audition a voice: 'short' (one sentence, default) or 'passage' (a longer paragraph). Never saves anything. */
+  previewVoice(engine: PreviewEngine, voice: string, length?: 'short' | 'passage', kokoroBackend?: 'sherpa' | 'gpu'): Promise<VoicePreview>;
+  /** Install Kokoro's reference pipeline (local PyTorch, GPU when available). Does not switch engines. */
+  installKokoroGpu(): Promise<ProviderSettings>;
   /** Refresh audience numbers from connected accounts (read-only) and compute monetization progress. */
   getAnalytics(): Promise<AnalyticsReport>;
 
@@ -249,6 +252,7 @@ export const IPC = {
   installKokoro: 'providers:installKokoro',
   generateVoiceSample: 'providers:voiceSample',
   previewVoice: 'providers:voicePreview',
+  installKokoroGpu: 'providers:installKokoroGpu',
   getAnalytics: 'analytics:get',
   listSounds: 'sounds:list',
   generateSound: 'sounds:generate',

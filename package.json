@@ -1,7 +1,7 @@
 {
   "name": "omnicore",
   "productName": "Omnicore",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Omnicore: desktop operations console and video factory for an AI-produced media business",
   "main": "out/main/index.js",
   "private": true,
@@ -19,7 +19,8 @@
     "test:watch": "vitest",
     "smoke": "electron-vite build && node scripts/smoke.mjs",
     "pack": "electron-vite build && electron-builder --dir --win --x64",
-    "dist": "electron-vite build && electron-builder --win --x64"
+    "dist": "electron-vite build && electron-builder --win --x64",
+    "voice:bench": "node scripts/voice-bench.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

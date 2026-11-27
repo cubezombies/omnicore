@@ -4,6 +4,7 @@ import path from 'node:path';
 import { adapterById, checkAdapter } from '../research/adapters';
 import { RESEARCH_PROVIDERS } from '../../shared/production';
 import { SapiNarration } from './narration';
+import { KokoroGpuNarration } from './kokoroGpu';
 import { SherpaKokoroNarration } from './sherpa';
 import { PiperNarration } from './piper';
 import type { NarrationProvider, Providers, VisualProvider } from './types';
@@ -27,8 +28,10 @@ export interface ProviderDirs {
 
 export const piperExePath = (s: ProviderSettings, dirs: ProviderDirs): string => s.piperPath || path.join(dirs.toolsDir, 'piper', 'piper.exe');
 
-const kokoro = (s: ProviderSettings, dirs: ProviderDirs) =>
-  new SherpaKokoroNarration(dirs.toolsDir, s.sherpaVoice, dirs.tmpDir, { speechRate: s.speechRate, pauseSec: s.sentencePauseSec, pronunciations: s.pronunciations });
+const kokoro = (s: ProviderSettings, dirs: ProviderDirs): NarrationProvider =>
+  s.kokoroBackend === 'gpu'
+    ? new KokoroGpuNarration(dirs.toolsDir, s.sherpaVoice, dirs.tmpDir, { speechRate: s.speechRate, pauseSec: s.sentencePauseSec, pronunciations: s.pronunciations })
+    : new SherpaKokoroNarration(dirs.toolsDir, s.sherpaVoice, dirs.tmpDir, { speechRate: s.speechRate, pauseSec: s.sentencePauseSec, pronunciations: s.pronunciations });
 
 export const narrator = (s: ProviderSettings, dirs: ProviderDirs): NarrationProvider =>
   s.narration === 'piper'
@@ -73,7 +76,8 @@ export async function checkProviders(s: ProviderSettings, dirs: ProviderDirs): P
     llmWriter(s),
     new SapiNarration(tmpDir, s.voice, s.speechRate),
     new PiperNarration(piperExePath(s, dirs), s.piperVoice, tmpDir, s.speechRate),
-    kokoro(s, dirs),
+    new SherpaKokoroNarration(dirs.toolsDir, s.sherpaVoice, dirs.tmpDir),
+    new KokoroGpuNarration(dirs.toolsDir, s.sherpaVoice, dirs.tmpDir),
     new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
     new OpenverseVisuals({ allowShareAlike: s.allowShareAlike }),
     new GraphicsVisuals(dirs.rasterize),

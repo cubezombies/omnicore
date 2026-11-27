@@ -84,6 +84,44 @@ export function sentenceSegments(pcm: Pcm, weights: number[], frameSec = 0.01): 
   return off ? proportional() : segs;
 }
 
+/** Write a PCM clip as a WAV file. */
+function writePcm(pcm: Pcm, data: Buffer, outFile: string): number {
+  const frame = pcm.channels * (pcm.bitsPerSample / 8);
+  const bytesPerSec = pcm.sampleRate * frame;
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0, 'ascii');
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write('WAVE', 8, 'ascii');
+  h.write('fmt ', 12, 'ascii');
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(pcm.channels, 22);
+  h.writeUInt32LE(pcm.sampleRate, 24);
+  h.writeUInt32LE(bytesPerSec, 28);
+  h.writeUInt16LE(frame, 32);
+  h.writeUInt16LE(pcm.bitsPerSample, 34);
+  h.write('data', 36, 'ascii');
+  h.writeUInt32LE(data.length, 40);
+  fs.writeFileSync(outFile, Buffer.concat([h, data]));
+  return data.length / bytesPerSec;
+}
+
+/**
+ * Keep the recording exactly as spoken, trimming only the silence before the first and after the last sentence
+ * (leaving `leadSec` before and `tailSec` after, so word onsets and decays are never clipped).
+ */
+export function trimSilence(pcm: Pcm, segs: Segment[], outFile: string, leadSec = 0.05, tailSec = 0.12): { durationSec: number; segments: Segment[] } {
+  const frame = pcm.channels * (pcm.bitsPerSample / 8);
+  const total = pcm.data.length / frame / pcm.sampleRate;
+  const from = Math.max(0, (segs[0]?.start ?? 0) - leadSec);
+  const to = Math.min(total, (segs[segs.length - 1]?.end ?? total) + tailSec);
+  const a = Math.floor(from * pcm.sampleRate) * frame;
+  const b = Math.max(a, Math.ceil(to * pcm.sampleRate) * frame);
+  const durationSec = writePcm(pcm, pcm.data.subarray(a, Math.min(pcm.data.length, b)), outFile);
+  const shift = a / frame / pcm.sampleRate;
+  return { durationSec, segments: segs.map((s) => ({ start: s.start - shift, end: s.end - shift })) };
+}
+
 /** Rebuild a clip so sentences are separated by exactly `pauseSec` of silence. Returns new segment times. */
 export function respace(pcm: Pcm, segs: Segment[], pauseSec: number, outFile: string, edgeSec = 0.05): { durationSec: number; segments: Segment[] } {
   const frame = pcm.channels * (pcm.bitsPerSample / 8);
@@ -145,4 +183,100 @@ export function tokenTimings(sentences: SpeechToken[][], segs: Segment[]): WordT
     });
   });
   return out;
+}
+
+export interface PauseRules {
+  /** Longest pause allowed after a sentence end (. ! ?). */
+  sentence: number;
+  /** Longest pause after a comma, semicolon, colon or dash. */
+  clause: number;
+  /** Longest pause between words with no punctuation (anything longer is a gap a listener notices). */
+  word: number;
+  /** Longest pause at a paragraph break. */
+  paragraph?: number;
+}
+
+/**
+ * Shorten pauses that are longer than the punctuation calls for. Audio is only ever removed from the middle of a
+ * silence (with 5 ms fades on each side of the cut), never from speech; word timings are shifted to match.
+ * `paragraphAfter` lists word indexes that end a paragraph.
+ */
+export function shapePauses(pcm: Pcm, words: WordTiming[], rules: PauseRules, outFile: string, paragraphAfter: Set<number> = new Set()): { durationSec: number; words: WordTiming[]; removedSec: number } {
+  const frame = pcm.channels * (pcm.bitsPerSample / 8);
+  const sr = pcm.sampleRate;
+  const rms = frameRms(pcm);
+  const peak = Math.max(1, ...rms);
+  const silent = rms.map((r) => r < peak * 0.03);
+  const cuts: { from: number; to: number }[] = [];
+  for (let i = 0; i < silent.length; ) {
+    if (!silent[i]) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < silent.length && silent[j]) j++;
+    const a = i / 100;
+    const b = j / 100;
+    i = j;
+    const before = words.findLastIndex((w) => w.start < a);
+    const after = words.findIndex((w) => w.start >= b - 0.05);
+    if (before < 0 || after < 0) continue; // leading/trailing silence is handled elsewhere
+    const t = words[before].text;
+    const cap = paragraphAfter.has(before) ? (rules.paragraph ?? rules.sentence) : /[.!?]["'”’)]*$/.test(t) ? rules.sentence : /[,;:—–]["'”’)]*$/.test(t) ? rules.clause : rules.word;
+    const len = b - a;
+    if (len <= cap + 0.02) continue;
+    const mid = (a + b) / 2;
+    cuts.push({ from: mid - (len - cap) / 2, to: mid + (len - cap) / 2 });
+  }
+  if (!cuts.length) {
+    fs.writeFileSync(outFile, wavBytes(pcm, pcm.data));
+    return { durationSec: pcm.data.length / frame / sr, words, removedSec: 0 };
+  }
+  const parts: Buffer[] = [];
+  let pos = 0;
+  const fadeN = Math.round(sr * 0.005);
+  const fade = (buf: Buffer, out: boolean) => {
+    const b = Buffer.from(buf);
+    const n = Math.floor(b.length / frame);
+    for (let k = 0; k < Math.min(fadeN, n); k++) {
+      const idx = out ? n - 1 - k : k;
+      const g = k / fadeN;
+      for (let c = 0; c < pcm.channels; c++) {
+        const o = idx * frame + c * 2;
+        b.writeInt16LE(Math.round(b.readInt16LE(o) * g), o);
+      }
+    }
+    return b;
+  };
+  cuts.forEach((c, k) => {
+    const s = Math.floor(c.from * sr) * frame;
+    let piece = pcm.data.subarray(pos, s);
+    if (k > 0) piece = fade(piece, false);
+    parts.push(fade(piece, true));
+    pos = Math.floor(c.to * sr) * frame;
+  });
+  parts.push(fade(pcm.data.subarray(pos), false));
+  const data = Buffer.concat(parts);
+  fs.writeFileSync(outFile, wavBytes(pcm, data));
+  const shift = (t: number) => t - cuts.filter((c) => c.to <= t + 1e-6).reduce((acc, c) => acc + (c.to - c.from), 0);
+  return { durationSec: data.length / frame / sr, words: words.map((w) => ({ ...w, start: shift(w.start), end: shift(w.end) })), removedSec: cuts.reduce((acc, c) => acc + c.to - c.from, 0) };
+}
+
+function wavBytes(pcm: Pcm, data: Buffer): Buffer {
+  const frame = pcm.channels * (pcm.bitsPerSample / 8);
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0, 'ascii');
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write('WAVE', 8, 'ascii');
+  h.write('fmt ', 12, 'ascii');
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(pcm.channels, 22);
+  h.writeUInt32LE(pcm.sampleRate, 24);
+  h.writeUInt32LE(pcm.sampleRate * frame, 28);
+  h.writeUInt16LE(frame, 32);
+  h.writeUInt16LE(pcm.bitsPerSample, 34);
+  h.write('data', 36, 'ascii');
+  h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
 }

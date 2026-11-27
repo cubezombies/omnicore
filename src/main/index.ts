@@ -1,3 +1,4 @@
+import { stopKokoroGpuWorkers } from './providers/kokoroGpu';
 import { app, BrowserWindow, dialog, Menu, nativeImage, net, protocol, safeStorage, session, shell, Tray, type IpcMainInvokeEvent } from 'electron';
 import { Publisher } from './publishing/publisher';
 import { defaultClients } from './publishing/platforms';
@@ -375,7 +376,10 @@ if (!app.requestSingleInstanceLock()) {
       e.preventDefault();
       void engine.stop('application quit').finally(() => setTimeout(() => app.quit(), 300));
     });
-    app.on('will-quit', () => db.close());
+    app.on('will-quit', () => {
+      stopKokoroGpuWorkers();
+      db.close();
+    });
 
     if (!BACKGROUND) createWindow();
     app.on('activate', () => {

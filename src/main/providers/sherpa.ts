@@ -7,7 +7,7 @@ import { readWavPcm } from '../media/wav';
 import { downloadTo } from './http';
 import { splitForSpeech } from './piper';
 import { speechTokens, spokenText, spokenWeight } from './pronunciation';
-import { respace, sentenceSegments, tokenTimings } from './speechTiming';
+import { sentenceSegments, tokenTimings, trimSilence } from './speechTiming';
 import { ProviderUnavailableError, type NarrationProvider, type NarrationResult } from './types';
 
 /** 1.x keeps espeak-ng for words missing from Kokoro's lexicon; 2.x silently drops them (verified: "delivers", "tokens", "30" vanished). */
@@ -27,6 +27,19 @@ export const sherpaPaths = (toolsDir: string) => {
 };
 
 /** Kokoro speed: rate -10..10 maps to a gentle 0.87x–1.15x range so narration never becomes rushed. */
+/**
+ * Kokoro's own pause model scales every punctuation pause (commas, colons, sentence ends) by --tts-silence-scale.
+ * Measured on Heart: 0.4 gives about 0.31 s between sentences and 0.12 s at commas, a natural reading rhythm.
+ * The sentence-pause setting picks the scale, so pauses stay where the model put them instead of being spliced in.
+ */
+export const kokoroSilenceScale = (pauseSec: number): number => Math.max(0.1, Math.min(1.2, pauseSec / 0.8));
+
+/**
+ * espeak-ng's "en" is British English. US voices must use "en-us" (verified: with "en", Heart said "wɔːtə", "təmɑːtəʊ"
+ * and "kɑːnt"; with "en-us", "wɔːɾɚ", "təmeɪɾoʊ" and "kænt").
+ */
+export const kokoroLang = (voice: string): string => (voice.startsWith('b') ? 'en-gb' : 'en-us');
+
 export const kokoroLengthScale = (speechRate: number): number => Math.max(0.87, Math.min(1.15, 1 - speechRate * 0.025));
 
 export class SherpaKokoroNarration implements NarrationProvider {
@@ -68,7 +81,8 @@ export class SherpaKokoroNarration implements NarrationProvider {
       `--kokoro-tokens=./tokens.txt`,
       `--kokoro-lexicon=./${lexicon}`,
       `--kokoro-data-dir=./espeak-ng-data`,
-      `--kokoro-lang=en`,
+      `--kokoro-lang=${kokoroLang(this.voice)}`,
+      `--tts-silence-scale=${kokoroSilenceScale(this.opts.pauseSec ?? 0.32).toFixed(3)}`,
       `--kokoro-length-scale=${kokoroLengthScale(this.opts.speechRate ?? 0).toFixed(3)}`,
       `--num-threads=${this.opts.threads ?? 4}`,
       `--sid=${sid}`,
@@ -100,7 +114,7 @@ export class SherpaKokoroNarration implements NarrationProvider {
     const p = this.problem();
     if (p) throw new ProviderUnavailableError(p);
     const sentences = splitForSpeech(text).map((s) =>
-      this.opts.rawText ? s.split(/\s+/).filter(Boolean).map((w) => ({ orig: w, spoken: w })) : speechTokens(s, this.opts.pronunciations)
+      this.opts.rawText ? s.split(/\s+/).filter(Boolean).map((w) => ({ orig: w, spoken: w })) : speechTokens(s, this.opts.pronunciations, { acronyms: 'dotted' })
     );
     if (!sentences.length) throw new Error('Nothing to narrate.');
     const raw = `${outWav}.raw.wav`;
@@ -109,7 +123,8 @@ export class SherpaKokoroNarration implements NarrationProvider {
       const pcm = readWavPcm(raw);
       const weights = sentences.map((toks) => toks.reduce((a, t) => a + spokenWeight(t), 0));
       const segs = sentenceSegments(pcm, weights);
-      const { durationSec, segments } = respace(pcm, segs, this.opts.pauseSec ?? 0.32, outWav);
+      // The recording is kept as the model spoke it (no cutting and re-spacing): only the leading and trailing silence is trimmed.
+      const { durationSec, segments } = trimSilence(pcm, segs, outWav);
       if (durationSec < 0.3) throw new Error('Kokoro produced an empty recording.');
       return { durationSec, words: tokenTimings(sentences, segments), voice: `kokoro:${this.voice}` };
     } finally {

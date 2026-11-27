@@ -93,6 +93,22 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function installKokoroGpuNow() {
+    setInstalling(true);
+    setError(null);
+    setMsg('Installing Kokoro’s reference pipeline (downloads ~3.5 GB; this can take a while)…');
+    try {
+      setS(await window.api.installKokoroGpu());
+      setMsg('Reference pipeline installed. Listen to the voices, then choose it above to use it.');
+      check();
+    } catch (e) {
+      setError(errorText(e));
+      setMsg(null);
+    } finally {
+      setInstalling(false);
+    }
+  }
+
   async function installKokoroNow() {
     setInstalling(true);
     setError(null);
@@ -224,7 +240,7 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
           </label>
           {s.narration === 'sherpa' ? (
             <>
-              <VoiceList label="Kokoro voice" name="sherpaVoice" engine="sherpa" voices={KOKORO_VOICES.map((v) => ({ id: v.id, label: v.label }))} value={s.sherpaVoice} onSelect={(id) => set('sherpaVoice', id as KokoroVoiceId)} />
+              <VoiceList label="Kokoro voice" name="sherpaVoice" engine="sherpa" voices={KOKORO_VOICES.map((v) => ({ id: v.id, label: v.label }))} value={s.sherpaVoice} onSelect={(id) => set('sherpaVoice', id as KokoroVoiceId)} kokoroBackend={s.kokoroBackend} />
               {status?.find((x) => x.id === 'sherpa')?.available === false && (
                 <div className="install-row">
                   <button className="secondary" disabled={installing} onClick={installKokoroNow}>
@@ -232,6 +248,31 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
                   </button>
                 </div>
               )}
+              <fieldset className="field kokoro-backend">
+                <legend>Run Kokoro with</legend>
+                <label className="check">
+                  <input type="radio" name="kokoroBackend" checked={s.kokoroBackend !== 'gpu'} onChange={() => set('kokoroBackend', 'sherpa')} />
+                  Built-in engine (sherpa-onnx, CPU)
+                </label>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="kokoroBackend"
+                    checked={s.kokoroBackend === 'gpu'}
+                    disabled={status?.find((x) => x.id === 'kokoro-gpu')?.available === false}
+                    onChange={() => set('kokoroBackend', 'gpu')}
+                  />
+                  Reference pipeline (GPU): consistent American pronunciation, whole-scene phrasing, exact caption timing
+                </label>
+                {status?.find((x) => x.id === 'kokoro-gpu')?.available === false && (
+                  <div className="install-row">
+                    <button className="secondary" disabled={installing} onClick={installKokoroGpuNow}>
+                      {installing ? 'Installing…' : 'Install reference pipeline (~3.5 GB, free)'}
+                    </button>
+                  </div>
+                )}
+                <p className="muted small">Same voices either way. Installing does not switch engines. Listen uses the engine chosen here, even before you save.</p>
+              </fieldset>
               <label className="field">
                 <span>Pause between sentences ({s.sentencePauseSec.toFixed(2)} s)</span>
                 <input type="range" min={0.15} max={0.8} step={0.01} value={s.sentencePauseSec} onChange={(e) => set('sentencePauseSec', Number(e.target.value))} />

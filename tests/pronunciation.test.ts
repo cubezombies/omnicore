@@ -94,3 +94,99 @@ describe('pronunciation detection regressions', () => {
     expect(f.map((x) => x.term)).not.toEqual(expect.arrayContaining(['accelerated', 'computing', 'general-purpose']));
   });
 });
+
+describe('engine-specific spoken forms (each verified with Whisper on the real engine)', () => {
+  const say = (t: string, o: Parameters<typeof speechTokens>[2] = {}) => spokenText(speechTokens(t, [], o));
+
+  it('keeps acronym plurals audible on every engine', () => {
+    expect(say('GPUs and CPUs, an API and AMD.', { acronyms: 'dotted' })).toBe('G.P.yooz and C.P.yooz, an A.P.I and A.M.D.');
+    expect(say('GPUs and CPUs, an API and AMD.')).toBe("G P U's and C P U's, an A-P-I and A-M-D.");
+    expect(say('GPUs and CPUs, an RTX 5070 and AMD.', { acronyms: 'native' })).toBe('GPUs and CPUs, an RTX 5070 and AMD.');
+  });
+
+  it('says product model numbers in pairs, dates as ordinals, titles in full', () => {
+    expect(say('An RTX 5070 beats a GTX 1080.')).toBe('An R T X 50 70 beats a G T X 10 80.');
+    expect(say('On March 3, 2026, Dr. Chen spoke.')).toBe('On March 3rd, 2026, Doctor Chen spoke.');
+    expect(say('Since 2026 and 2005, not 1999.', { years: true })).toBe('Since twenty twenty-six and two thousand five, not nineteen ninety-nine.');
+  });
+
+  it('uses respellings for the benchmark terms the engines got wrong', () => {
+    expect(say('Omnicore needs VRAM and CUDA.', { acronyms: 'dotted' })).toBe('omni core needs vee-ram and cooda.');
+    expect(say('ChatGPT', { acronyms: 'dotted' })).toBe('Chat G.P.T');
+  });
+});
+
+describe('sentence splitting', () => {
+  it('does not break sentences after titles, abbreviations or initials', async () => {
+    const { splitForSpeech } = await import('../src/main/providers/piper');
+    expect(splitForSpeech('Dr. Chen met J. Smith, e.g. at lunch. Then AMD. Then more!')).toEqual(['Dr. Chen met J. Smith, e.g. at lunch.', 'Then AMD.', 'Then more!']);
+  });
+});
+
+describe('Kokoro (GPU) helpers', () => {
+  it('maps model word timings back onto the script words and converts IPA', async () => {
+    const { alignWords, ipaToKokoro } = await import('../src/main/providers/kokoroGpu');
+    const toks = speechTokens('NVIDIA ships general-purpose GPUs.', [], { acronyms: 'native' });
+    const model = [
+      { text: 'NVIDIA', start: 0.1, end: 0.6 },
+      { text: 'ships', start: 0.6, end: 0.9 },
+      { text: 'general', start: 0.9, end: 1.3 },
+      { text: '-', start: 1.3, end: 1.3 },
+      { text: 'purpose', start: 1.3, end: 1.7 },
+      { text: 'GPUs', start: 1.7, end: 2.3 },
+      { text: '.', start: 2.3, end: 2.4 }
+    ];
+    const w = alignWords(toks, model, 2.5);
+    expect(w.map((x) => [x.text, x.start, x.end])).toEqual([['NVIDIA', 0.1, 0.6], ['ships', 0.6, 0.9], ['general-purpose', 0.9, 1.7], ['GPUs.', 1.7, 2.3]]);
+    expect(ipaToKokoro('/ˈɑːmnikɔːr/')).toBe('ˈɑmnikɔɹ');
+    expect(ipaToKokoro('dʒiːpiːˈjuː')).toBe('ʤipiˈju');
+    expect(ipaToKokoro('ˈoʊmni')).toBe('ˈOmni');
+  });
+});
+
+describe('pause shaping and Kokoro settings', () => {
+  it('shortens only over-long silences, by punctuation, and shifts word timings', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { writeWav, readWavPcm } = await import('../src/main/media/wav');
+    const { shapePauses } = await import('../src/main/providers/speechTiming');
+    const sr = 24000;
+    const tone = (sec: number) => Array.from({ length: Math.round(sec * sr) }, (_, i) => 0.4 * Math.sin((2 * Math.PI * 180 * i) / sr));
+    const gap = (sec: number) => new Array(Math.round(sec * sr)).fill(0);
+    // word | 0.8 s after a comma | word | 0.5 s with no punctuation | word | 0.3 s after a full stop | word
+    const samples = Float32Array.from([...tone(0.5), ...gap(0.8), ...tone(0.5), ...gap(0.5), ...tone(0.5), ...gap(0.3), ...tone(0.5)]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shape-'));
+    const f = path.join(dir, 'in.wav');
+    writeWav(f, samples, sr);
+    const words = [
+      { text: 'one,', start: 0, end: 0.5 },
+      { text: 'two', start: 1.3, end: 1.8 },
+      { text: 'three.', start: 2.3, end: 2.8 },
+      { text: 'four', start: 3.1, end: 3.6 }
+    ];
+    const r = shapePauses(readWavPcm(f), words, { sentence: 0.4, clause: 0.22, word: 0.09 }, path.join(dir, 'out.wav'));
+    expect(r.removedSec).toBeCloseTo(0.58 + 0.41, 1); // comma pause → 0.22 s, word gap → 0.09 s, sentence pause kept
+    expect(r.words[1].start).toBeCloseTo(0.72, 1);
+    expect(r.words[3].start - r.words[2].end).toBeCloseTo(0.3, 1);
+    expect(r.durationSec).toBeCloseTo(3.6 - r.removedSec, 2);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('uses American English for US Kokoro voices and the model pause scale for the pause setting', async () => {
+    const { kokoroLang, kokoroSilenceScale } = await import('../src/main/providers/sherpa');
+    expect(kokoroLang('af_heart')).toBe('en-us');
+    expect(kokoroLang('am_michael')).toBe('en-us');
+    expect(kokoroLang('bf_lily')).toBe('en-gb');
+    expect(kokoroSilenceScale(0.32)).toBeCloseTo(0.4, 5);
+  });
+});
+
+describe('re-voice validation', () => {
+  it('accepts the first scene (index 0) and rejects bad indexes', async () => {
+    const { sceneList } = await import('../src/main/validation');
+    expect(sceneList([0, 3])).toEqual([0, 3]);
+    expect(() => sceneList([-1])).toThrow(/non-negative/);
+    expect(() => sceneList(['1'])).toThrow(/non-negative/);
+  });
+});

@@ -9,6 +9,7 @@ import type { SoundLibrary } from './library';
 import { installPiper } from './providers/piper';
 import { checkProviders, narrator, type ProviderDirs } from './providers/registry';
 import { installKokoro } from './providers/sherpa';
+import { installKokoroGpu } from './providers/kokoroGpuInstall';
 import { installAsr } from './qa/asr';
 import type { AuditLedger } from './audit/ledger';
 import type { OperatingEngine } from './autonomy/engine';
@@ -20,7 +21,7 @@ let autonomyListener: () => void = () => {};
 /** Main process hook: apply tray/startup/engine changes when autonomy settings are saved. */
 export const onAutonomySettingsChanged = (fn: () => void) => (autonomyListener = fn);
 const onAutonomyChanged = () => autonomyListener();
-import { VOICE_SAMPLE_TEXT, sampleUrl } from '../shared/production';
+import { VOICE_PASSAGE_TEXT, VOICE_PREVIEW_TEXT, VOICE_SAMPLE_TEXT, sampleUrl } from '../shared/production';
 import { VoicePreviews, previewNarrator, previewStyle } from './providers/voicePreview';
 import type { BusinessRepository } from './business/businesses';
 import type { TopicRepository } from './business/topics';
@@ -203,9 +204,17 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       productions.saveSettings({ ...productions.getSettings(), voiceWordsPerSec: Math.round(wordsPerSec * 100) / 100 });
       return { url: sampleUrl(file), durationSec: r.durationSec, wordsPerSec, voice: r.voice, engine: n.label };
     },
-    previewVoice: (engine, voice) => {
+    installKokoroGpu: async () => {
+      // Installing never switches the engine: the user chooses it after listening.
+      await installKokoroGpu(dirs.toolsDir, dirs.tmpDir, AbortSignal.timeout(90 * 60_000));
+      return productions.getSettings();
+    },
+    previewVoice: (engine, voice, length, kokoroBackend) => {
       const p = v.previewVoice(engine, voice);
-      return previews.preview(p.engine, p.voice);
+      // Auditions use the real engine and voice, with this business's pronunciation dictionary; nothing is saved.
+      const text = length === 'passage' ? VOICE_PASSAGE_TEXT : VOICE_PREVIEW_TEXT;
+      const backend = kokoroBackend === 'gpu' ? 'gpu' : kokoroBackend === 'sherpa' ? 'sherpa' : undefined;
+      return previews.preview(p.engine, p.voice, undefined, { text, pronunciations: pronunciations.resolved(cur(), p.engine) }, backend);
     },
 
     // ---- analytics and automation (active business) -----------------------------------
@@ -348,7 +357,7 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       const base = pronunciations.resolved(bid, voice.engine).filter((x) => !r.term || x.term.toLowerCase() !== r.term.toLowerCase());
       return previews.preview(voice.engine, voice.voice, AbortSignal.timeout(180_000), { text: r.text, pronunciations: r.term && r.say ? [...base, { term: r.term, say: r.say }] : base });
     },
-    revoiceScenes: (id, scenes) => runner.renarrateScenes(own('production', id), v.idList(scenes).map((n) => n)),
+    revoiceScenes: (id, scenes) => runner.renarrateScenes(own('production', id), v.sceneList(scenes)),
 
     // ---- sound library: licensed assets shared by all businesses (core) ------------------
     listSounds: () => library.list(),
