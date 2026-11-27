@@ -155,11 +155,11 @@ export function extractiveStoryboard(brief: Brief, channelName: string): Storybo
 export class InvalidStoryboardError extends Error {}
 
 /** Structural and citation checks applied to every writer's output. */
-export function validateStoryboard(sb: Storyboard, sources: Source[]): Storyboard {
+export function validateStoryboard(sb: Storyboard, sources: Source[], maxScenes = 10): Storyboard {
   const ids = new Set(sources.map((s) => s.id));
   if (!sb.title?.trim()) throw new InvalidStoryboardError('Storyboard has no title.');
-  if (!Array.isArray(sb.scenes) || sb.scenes.length < 3 || sb.scenes.length > 10) {
-    throw new InvalidStoryboardError(`Storyboard needs 3–10 scenes (got ${sb.scenes?.length ?? 0}).`);
+  if (!Array.isArray(sb.scenes) || sb.scenes.length < 3 || sb.scenes.length > maxScenes) {
+    throw new InvalidStoryboardError(`Storyboard needs 3–${maxScenes} scenes (got ${sb.scenes?.length ?? 0}).`);
   }
   if (sb.scenes[0].role !== 'hook' || sb.scenes[sb.scenes.length - 1].role !== 'outro') {
     throw new InvalidStoryboardError('Storyboard must start with a hook scene and end with an outro scene.');

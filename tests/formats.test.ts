@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../src/main/db/database';
 import { ProductionRepository } from '../src/main/db/productions';
-import { buildMessages, lengthProblem, wordBudget } from '../src/main/providers/writers';
+import { buildMessages, ExtractiveWriter, lengthProblem, wordBudget } from '../src/main/providers/writers';
+import { validateStoryboard } from '../src/main/providers/text';
 import { buildEvidenceBrief } from '../src/main/research/evidence';
 import { newProduction } from '../src/main/validation';
 import { PRODUCTION_FORMATS, type Storyboard } from '../src/shared/production';
@@ -37,6 +38,15 @@ describe('production formats', () => {
     const shortPrompt = buildMessages({ brief: buildEvidenceBrief(SOURCES[0].title, SOURCES, 'AI', 'explainer', 140), sources: SOURCES, channelName: 'AI, Actually' }).map((m) => m.content).join('\n');
     expect(shortPrompt).toMatch(/45-60 second/);
     expect(shortPrompt).toMatch(/under 60 seconds/);
+  });
+
+  it('lets a standard storyboard use up to 12 scenes (hook, up to 10 claims, outro) and keeps shorts at 10', async () => {
+    const brief = buildEvidenceBrief(SOURCES[0].title, SOURCES, 'AI', 'explainer', 300, 'standard', 142);
+    const sb = (await new ExtractiveWriter().write({ brief, sources: SOURCES, channelName: 'AI, Actually' })).storyboard;
+    expect(sb.scenes.length).toBeLessThanOrEqual(12);
+    const scenes = (n: number) => ({ title: 't', writer: 'w', scenes: Array.from({ length: n }, (_, i) => ({ index: i, role: i === 0 ? 'hook' : i === n - 1 ? 'outro' : 'fact', narration: 'x', onScreenText: '', visualQuery: '', sourceIds: i === 0 || i === n - 1 ? [] : [SOURCES[0].id] })) }) as unknown as Storyboard;
+    expect(() => validateStoryboard(scenes(11), SOURCES)).toThrow(/3–10 scenes/);
+    expect(() => validateStoryboard(scenes(11), SOURCES, PRODUCTION_FORMATS.standard.maxScenes)).not.toThrow(/scenes/);
   });
 
   it('requires more evidence for the standard format', () => {

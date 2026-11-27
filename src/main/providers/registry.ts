@@ -7,7 +7,7 @@ import { SapiNarration } from './narration';
 import { SherpaKokoroNarration } from './sherpa';
 import { PiperNarration } from './piper';
 import type { NarrationProvider, Providers, VisualProvider } from './types';
-import { CommonsVisuals, ComfyVisuals, TitleCardVisuals } from './visuals';
+import { CommonsVisuals, ComfyVisuals, GraphicsVisuals, OpenverseVisuals, TitleCardVisuals, type Rasterizer } from './visuals';
 import { ExtractiveWriter, maxWordsForVoice, OpenAICompatibleWriter } from './writers';
 
 const llmWriter = (s: ProviderSettings) =>
@@ -19,6 +19,8 @@ export const effectiveWordsPerSec = (s: ProviderSettings): number =>
 
 export interface ProviderDirs {
   tmpDir: string;
+  /** Draws generated graphics (Electron offscreen renderer); absent outside the app. */
+  rasterize?: Rasterizer;
   /** Where in-app installed tools (Piper) live: <data dir>/tools. */
   toolsDir: string;
 }
@@ -40,6 +42,8 @@ export function buildProviders(s: ProviderSettings, dirs: ProviderDirs): Provide
   const ffmpeg = () => resolveFfmpeg(s.ffmpegPath);
   const visualById: Record<string, () => VisualProvider> = {
     'wikimedia-commons': () => new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
+    openverse: () => new OpenverseVisuals({ allowShareAlike: s.allowShareAlike }),
+    graphics: () => new GraphicsVisuals(dirs.rasterize),
     comfyui: () => new ComfyVisuals(s.comfyUrl, s.comfyCheckpoint),
     'title-card': () => new TitleCardVisuals(ffmpeg)
   };
@@ -71,6 +75,8 @@ export async function checkProviders(s: ProviderSettings, dirs: ProviderDirs): P
     new PiperNarration(piperExePath(s, dirs), s.piperVoice, tmpDir, s.speechRate),
     kokoro(s, dirs),
     new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
+    new OpenverseVisuals({ allowShareAlike: s.allowShareAlike }),
+    new GraphicsVisuals(dirs.rasterize),
     new ComfyVisuals(s.comfyUrl, s.comfyCheckpoint),
     new TitleCardVisuals(() => resolveFfmpeg(s.ffmpegPath))
   ];

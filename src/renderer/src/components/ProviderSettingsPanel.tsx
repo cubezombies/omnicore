@@ -26,6 +26,8 @@ import { errorText } from './ProductionDetail';
 
 const VISUAL_LABELS: Record<VisualProviderId, string> = {
   'wikimedia-commons': 'Wikimedia Commons (free licensed images)',
+  openverse: 'Openverse (openly licensed images)',
+  graphics: 'Explanatory graphics (stats, steps, sources; local)',
   comfyui: 'ComfyUI (local image generation)',
   'title-card': 'Title cards (local fallback)'
 };

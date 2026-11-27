@@ -4,7 +4,7 @@
 
 import type { ProductionAsset } from '../../shared/production';
 
-export type AssetOrigin = 'commons' | 'wikipedia' | 'generated-ai' | 'generated-card' | 'user' | 'stock';
+export type AssetOrigin = 'commons' | 'wikipedia' | 'openverse' | 'generated-ai' | 'generated-card' | 'user' | 'stock';
 
 export interface LicenseRecord {
   origin: AssetOrigin;
@@ -86,6 +86,10 @@ export function verifyVisualAssets(images: ProductionAsset[], opts: { allowShare
     const scene = `Scene ${(a.sceneIndex ?? 0) + 1}`;
     const lic = a.meta.licenseRecord as LicenseRecord | undefined;
     if (a.provider === 'title-card') continue;
+    if (a.provider === 'graphics') {
+      if (!a.meta.generated || !a.meta.labelled) problems.push(`${scene}: generated graphic is not marked as an original, labelled graphic.`);
+      continue;
+    }
     if (a.provider === 'comfyui') {
       if (!a.meta.aiGenerated) problems.push(`${scene}: AI image is not marked as AI-generated.`);
       continue;

@@ -7,6 +7,25 @@ import { searchTerms, significantTokens } from './text';
 import { runFfmpeg } from '../media/ffmpeg';
 import { downloadTo, fetchJson, fetchRetry } from './http';
 import { ProviderUnavailableError, type VisualProvider, type VisualRequest, type VisualResult } from './types';
+import { assetRelevance } from '../media/relevance';
+import { graphicHtml } from '../media/graphics';
+
+/** Renders self-contained HTML to a 1080×1920 PNG (Electron offscreen in the app; injected in tests). */
+export type Rasterizer = (html: string, outPng: string, signal: AbortSignal) => Promise<void>;
+
+const GENERIC = /^(ai|how|why|what|use|uses|used|work|works|explained|training|model|models|new|large|data|system|systems)$/i;
+
+/**
+ * Search phrases for a scene, most specific first: the planned query, the topic, named things in the
+ * narration (e.g. "NVIDIA H100"), then the topic's main subject word. Image search engines match every
+ * word, so shorter fallbacks are needed; the relevance check still has to pass for whatever comes back.
+ */
+export function photoQueries(req: Pick<VisualRequest, 'scene' | 'brief' | 'plan'>): string[] {
+  const named = [...req.scene.narration.matchAll(/\b([A-Z][A-Za-z0-9]*[A-Z0-9][A-Za-z0-9]*|[A-Z][a-z]+)(\s+[A-Z0-9][A-Za-z0-9-]*)+/g)].map((m) => m[0]).filter((n) => !/^(A|An|The|This|That|Another|Sources|Follow)\b/.test(n));
+  const subject = searchTerms(req.brief.topic).split(' ').filter((w) => w && !GENERIC.test(w));
+  const list = [req.plan?.query ?? req.scene.visualQuery, req.brief.topic, ...named.slice(0, 2), subject.slice(0, 2).join(' '), subject[0] ?? ''];
+  return [...new Set(list.map((q) => searchTerms(q)).filter(Boolean))].slice(0, 5);
+}
 
 // ---------------------------------------------------------------------------
 // Wikimedia Commons: real, freely licensed photos/illustrations with attribution.
@@ -39,6 +58,8 @@ export interface CommonsCandidate {
   width: number;
   height: number;
   licenseRecord: LicenseRecord;
+  /** Image description from the file page, for relevance checks. */
+  description?: string;
 }
 
 /**
@@ -88,6 +109,7 @@ export function pickCommonsCandidates(pages: CommonsPage[], used: Set<string>, t
           attribution: `"${name}" by ${artist}, ${license}, via ${/commons\.wikimedia\.org/.test(ii.descriptionurl) ? 'Wikimedia Commons' : 'Wikipedia'}`,
           width: ii.width,
           height: ii.height,
+          description: stripHtml(meta.ImageDescription?.value ?? '').slice(0, 2000),
           licenseRecord: {
             origin: /commons\.wikimedia\.org/.test(ii.descriptionurl) ? 'commons' : 'wikipedia',
             sourceUrl: ii.descriptionurl,
@@ -167,22 +189,25 @@ export class CommonsVisuals implements VisualProvider {
     const cited = wiki.filter((s) => req.scene.sourceIds.includes(s.id));
     for (const group of [cited, wiki]) {
       if (!group.length) continue;
-      const c = (await this.articleImages(group.map((s) => s.title), signal)).find((x) => !req.usedKeys.has(x.key));
-      if (c) return this.save(c, req, signal, `article:${group.map((s) => s.id).join(',')}`);
+      for (const c of (await this.articleImages(group.map((s) => s.title), signal)).filter((x) => !req.usedKeys.has(x.key))) {
+        const rel = assetRelevance({ title: c.key, description: c.description }, req.scene, req.brief.topic, { fromCitedArticle: true });
+        if (rel.ok) return this.save(c, req, signal, `article:${group.map((s) => s.id).join(',')}`, rel.reason);
+      }
     }
-    const queries = [...new Set([req.scene.visualQuery, req.brief.topic].map((q) => searchTerms(q)).filter(Boolean))];
+    const queries = photoQueries(req);
     for (const q of queries) {
-      const cands = await this.search(q, req.brief.topic, req.usedKeys, signal);
-      const c = cands[0];
-      if (c) return this.save(c, req, signal, `search:${q}`);
+      for (const c of await this.search(q, req.brief.topic, req.usedKeys, signal)) {
+        const rel = assetRelevance({ title: c.key, description: c.description }, req.scene, req.brief.topic);
+        if (rel.ok) return this.save(c, req, signal, `search:${q}`, rel.reason);
+      }
     }
     return null;
   }
 
-  private async save(c: CommonsCandidate, req: VisualRequest, signal: AbortSignal, via: string): Promise<VisualResult> {
+  private async save(c: CommonsCandidate, req: VisualRequest, signal: AbortSignal, via: string, relevance: string): Promise<VisualResult> {
     const file = req.outBase + c.ext;
     await downloadTo(c.url, file, { signal });
-    return { file, key: c.key, sourceUrl: c.sourceUrl, license: c.license, attribution: c.attribution, meta: { via, width: c.width, height: c.height, licenseRecord: c.licenseRecord } };
+    return { file, key: c.key, sourceUrl: c.sourceUrl, license: c.license, attribution: c.attribution, meta: { via, width: c.width, height: c.height, licenseRecord: c.licenseRecord, relevance, relevant: true } };
   }
 }
 
@@ -331,5 +356,145 @@ Dialogue: 0,0:00:00.00,0:00:05.00,T,,0,0,0,,${assEscape(text)}
       fs.rmSync(path.join(dir, assFile), { force: true });
     }
     return { file: `${req.outBase}.png`, key: `card:${req.scene.index}`, sourceUrl: '', license: 'Generated graphic', attribution: 'Title card generated by Omnicore' };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Openverse: openly licensed images (Flickr, museums, etc.) with licence metadata, via the official API.
+
+interface OpenverseImage {
+  id: string;
+  title?: string;
+  foreign_landing_url: string;
+  url: string;
+  creator?: string;
+  license: string;
+  license_version?: string;
+  license_url?: string;
+  provider?: string;
+  source?: string;
+  tags?: { name: string }[];
+  width?: number;
+  height?: number;
+  filetype?: string;
+  mature?: boolean;
+}
+
+/** Openverse licence code → licence name the asset policy understands (NC/ND/sampling stay unrecognised and are rejected). */
+export function openverseLicense(code: string, version = ''): string {
+  const v = version ? ` ${version}` : '';
+  switch (code.toLowerCase()) {
+    case 'cc0':
+      return 'CC0';
+    case 'pdm':
+      return 'Public domain mark';
+    case 'by':
+      return `CC BY${v}`;
+    case 'by-sa':
+      return `CC BY-SA${v}`;
+    default:
+      return `CC ${code.toUpperCase()}${v}`;
+  }
+}
+
+export class OpenverseVisuals implements VisualProvider {
+  id = 'openverse';
+  label = 'Openverse (openly licensed images)';
+  costPerUnitUsd = 0;
+  constructor(
+    private readonly policy: { allowShareAlike: boolean } = { allowShareAlike: false },
+    private readonly api = 'https://api.openverse.org/v1/images/'
+  ) {}
+
+  async check(signal?: AbortSignal): Promise<ProviderStatus> {
+    const base = { id: this.id, kind: 'visuals' as const, label: this.label, costPerUnitUsd: 0 };
+    try {
+      await fetchJson(`${this.api}?q=computer&page_size=1`, { signal, timeoutMs: 8000, retries: 0 });
+      return { ...base, available: true, detail: 'Reachable' };
+    } catch (e) {
+      return { ...base, available: false, detail: `Unreachable (needs internet): ${(e as Error).message}` };
+    }
+  }
+
+  async fetch(req: VisualRequest, signal: AbortSignal): Promise<VisualResult | null> {
+    const licenses = this.policy.allowShareAlike ? 'by,by-sa,cc0,pdm' : 'by,cc0,pdm';
+    const queries = photoQueries(req);
+    for (const q of queries) {
+      const params = new URLSearchParams({ q, license: licenses, page_size: '20', mature: 'false', extension: 'jpg,png' });
+      const r = await fetchJson<{ results?: OpenverseImage[] }>(`${this.api}?${params}`, { signal });
+      for (const img of r.results ?? []) {
+        const key = `openverse:${img.id}`;
+        if (req.usedKeys.has(key) || img.mature) continue;
+        if ((img.width ?? 0) < 800 || (img.height ?? 0) < 600) continue;
+        const license = openverseLicense(img.license, img.license_version);
+        const verdict = evaluateLicense(license, this.policy);
+        if (!verdict.ok) continue;
+        const creator = (img.creator ?? '').trim();
+        if (verdict.attributionRequired && !creator) continue;
+        const title = (img.title ?? '').trim() || 'Untitled';
+        const rel = assetRelevance({ title, tags: (img.tags ?? []).map((t) => t.name) }, req.scene, req.brief.topic);
+        if (!rel.ok) continue;
+        const ext = img.filetype === 'png' || /\.png($|\?)/i.test(img.url) ? '.png' : '.jpg';
+        const file = req.outBase + ext;
+        try {
+          await downloadTo(img.url, file, { signal });
+        } catch {
+          continue; // dead upstream link: try the next result
+        }
+        const licenseRecord: LicenseRecord = {
+          origin: 'openverse',
+          sourceUrl: img.foreign_landing_url,
+          creator: creator || 'Unknown author',
+          license,
+          licenseUrl: img.license_url ?? '',
+          attributionRequired: verdict.attributionRequired,
+          commercialUse: verdict.commercialUse,
+          modification: verdict.modification,
+          shareAlike: verdict.shareAlike,
+          retrievedAt: new Date().toISOString(),
+          verified: true,
+          notes: `${verdict.reason}; licence as published by ${img.source ?? img.provider ?? 'the source'} via Openverse`
+        };
+        return {
+          file,
+          key,
+          sourceUrl: img.foreign_landing_url,
+          license,
+          attribution: `"${title}" by ${licenseRecord.creator}, ${license}, via ${img.source ?? img.provider ?? 'Openverse'}`,
+          meta: { via: `openverse:${q}`, width: img.width, height: img.height, licenseRecord, relevance: rel.reason, relevant: true }
+        };
+      }
+    }
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Original explanatory graphics, planned per scene (stat, comparison, steps, quote, source, title, sources).
+
+export class GraphicsVisuals implements VisualProvider {
+  id = 'graphics';
+  label = 'Explanatory graphics (generated locally)';
+  costPerUnitUsd = 0;
+  constructor(private readonly rasterize?: Rasterizer) {}
+
+  async check(): Promise<ProviderStatus> {
+    const base = { id: this.id, kind: 'visuals' as const, label: this.label, costPerUnitUsd: 0 };
+    return this.rasterize ? { ...base, available: true, detail: 'Built in' } : { ...base, available: false, detail: 'Needs the desktop app (graphics are drawn by its built-in renderer).' };
+  }
+
+  async fetch(req: VisualRequest, signal: AbortSignal): Promise<VisualResult | null> {
+    if (!this.rasterize || !req.plan) return null;
+    const spec = req.plan.graphic;
+    const file = `${req.outBase}.png`;
+    await this.rasterize(graphicHtml(spec, req.scene.index), file, signal);
+    return {
+      file,
+      key: `graphic:${spec.kind}:${req.scene.index}`,
+      sourceUrl: '',
+      license: 'Original graphic (Omnicore)',
+      attribution: 'Graphic by AI, Actually',
+      meta: { generated: true, graphicKind: spec.kind, planReason: req.plan.reason, labelled: true }
+    };
   }
 }

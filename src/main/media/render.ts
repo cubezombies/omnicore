@@ -6,10 +6,19 @@ export const FPS = 30;
 /** Silence after each scene's narration so cuts don't feel rushed. */
 export const SCENE_PAD_SEC = 0.35;
 
+export type Motion = 'in' | 'out' | 'left' | 'right' | 'still';
+export type Transition = 'fade' | 'smoothleft' | 'smoothup' | 'slideleft' | 'circleopen';
+/** Cross-transition length; each scene's picture runs this much longer so cuts stay on the narration boundaries. */
+export const XFADE_SEC = 0.3;
+
 export interface RenderScene {
   image: string; // path relative to cwd
   audio: string; // path relative to cwd
   durationSec: number; // frame-aligned scene duration (narration + pad)
+  /** Camera move on the still (default: alternate push-in / pull-out). */
+  motion?: Motion;
+  /** Transition INTO this scene from the previous one (ignored for the first scene; default: hard cut). */
+  transition?: Transition;
 }
 
 export interface RenderPlan {
@@ -51,21 +60,47 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   const W2 = Math.round(VIDEO_W * 1.25);
   const H2 = Math.round(VIDEO_H * 1.25);
   const f: string[] = [];
+  const xf = p.scenes.some((s, i) => i > 0 && s.transition);
   p.scenes.forEach((s, i) => {
-    const frames = Math.round(s.durationSec * FPS);
-    // Alternate slow push-in / pull-out for gentle motion on stills.
-    const zoom = i % 2 === 0 ? `min(1+0.12*on/${frames},1.12)` : `max(1.12-0.12*on/${frames},1)`;
+    // With transitions, every scene but the last runs XFADE_SEC longer and overlaps the next one.
+    const extra = xf && i < n - 1 ? XFADE_SEC : 0;
+    const frames = Math.round((s.durationSec + extra) * FPS);
+    const motion: Motion = s.motion ?? (i % 2 === 0 ? 'in' : 'out');
+    const cx = `iw/2-(iw/zoom/2)`;
+    const cy = `ih/2-(ih/zoom/2)`;
+    const [zoom, x] =
+      motion === 'in'
+        ? [`min(1+0.12*on/${frames},1.12)`, cx]
+        : motion === 'out'
+          ? [`max(1.12-0.12*on/${frames},1)`, cx]
+          : motion === 'left'
+            ? ['1.12', `(iw-iw/zoom)*(1-on/${frames})`]
+            : motion === 'right'
+              ? ['1.12', `(iw-iw/zoom)*on/${frames}`]
+              : [`min(1+0.03*on/${frames},1.03)`, cx];
     f.push(
       `[${i}:v]scale=${W2}:${H2}:force_original_aspect_ratio=increase,crop=${W2}:${H2},setsar=1,` +
-        `zoompan=z='${zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${VIDEO_W}x${VIDEO_H}:fps=${FPS},` +
-        `trim=end_frame=${frames},setpts=PTS-STARTPTS[v${i}]`
+        `zoompan=z='${zoom}':x='${x}':y='${cy}':d=${frames}:s=${VIDEO_W}x${VIDEO_H}:fps=${FPS},` +
+        `trim=end_frame=${frames},setpts=PTS-STARTPTS,format=yuv420p[v${i}]`
     );
     f.push(
       `[${n + i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
         `apad=whole_dur=${s.durationSec.toFixed(4)},atrim=duration=${s.durationSec.toFixed(4)}[a${i}]`
     );
   });
-  f.push(`${p.scenes.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${n}:v=1:a=1[vc][ac]`);
+  if (xf && n > 1) {
+    let prev = 'v0';
+    let offset = 0;
+    for (let i = 1; i < n; i++) {
+      offset += p.scenes[i - 1].durationSec;
+      const out = i === n - 1 ? 'vc' : `x${i}`;
+      f.push(`[${prev}][v${i}]xfade=transition=${p.scenes[i].transition ?? 'fade'}:duration=${XFADE_SEC}:offset=${offset.toFixed(4)}[${out}]`);
+      prev = out;
+    }
+    f.push(`${p.scenes.map((_, i) => `[a${i}]`).join('')}concat=n=${n}:v=0:a=1[ac]`);
+  } else {
+    f.push(`${p.scenes.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${n}:v=1:a=1[vc][ac]`);
+  }
   f.push(`[vc]ass=${p.captions},format=yuv420p[vout]`);
   f.push(`[ac]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[narr]`);
   if (p.music) {

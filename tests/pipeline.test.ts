@@ -10,7 +10,12 @@ import { writeWav } from '../src/main/media/wav';
 import { ProductionRunner } from '../src/main/pipeline/runner';
 import type { NarrationProvider, Providers, VisualProvider, Writer } from '../src/main/providers/types';
 import type { ResearchAdapter } from '../src/main/research/adapters';
-import { TitleCardVisuals } from '../src/main/providers/visuals';
+import { GraphicsVisuals, TitleCardVisuals, type Rasterizer } from '../src/main/providers/visuals';
+import { runFfmpeg } from '../src/main/media/ffmpeg';
+
+// Stands in for the app's offscreen renderer: a real, non-blank 1080×1920 PNG per graphic.
+const fakeRaster: Rasterizer = (html, out, signal) =>
+  runFfmpeg(resolveFfmpeg(''), ['-f', 'lavfi', '-i', `testsrc2=s=1080x1920:r=1:d=1,hue=h=${html.length % 360}`, '-frames:v', '1', '-update', '1', out], { signal });
 import { ExtractiveWriter, OpenAICompatibleWriter } from '../src/main/providers/writers';
 import { DEFAULT_SETTINGS, type ProviderSettings } from '../src/shared/production';
 import { SOURCES } from './fixtures';
@@ -82,13 +87,13 @@ beforeEach(() => {
   db = openDatabase(':memory:');
   repo = new ProductionRepository(db);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aimo-prod-'));
-  settings = { ...DEFAULT_SETTINGS, visuals: ['title-card'] };
+  settings = { ...DEFAULT_SETTINGS, visuals: ['graphics', 'title-card'] };
   emitted = [];
   providers = {
     research: [fakeResearch({ n: 0 })],
     writer: new ExtractiveWriter(),
     narration: fakeNarration(),
-    visuals: [new TitleCardVisuals(() => ffmpeg)]
+    visuals: [new GraphicsVisuals(fakeRaster), new TitleCardVisuals(() => ffmpeg)]
   };
 });
 afterEach(() => {
@@ -265,9 +270,9 @@ describe('production pipeline', () => {
     await runner.idle();
     const voice = { calls: 0 };
     let visualCalls = 0;
-    const card = new TitleCardVisuals(() => ffmpeg);
+    const gfx = new GraphicsVisuals(fakeRaster);
     providers.narration = fakeNarration(voice);
-    providers.visuals = [{ ...failingVisual(''), id: 'title-card', fetch: (r, s) => (visualCalls++, card.fetch(r, s)) }];
+    providers.visuals = [{ ...failingVisual(''), id: 'graphics', fetch: (r, s) => (visualCalls++, gfx.fetch(r, s)) }];
     runner.rerun(p.id, 'visuals');
     expect(repo.get(p.id).assets.filter((a) => ['image', 'captions', 'video'].includes(a.kind))).toHaveLength(0);
     expect(repo.get(p.id).outputPath).toBeNull();
