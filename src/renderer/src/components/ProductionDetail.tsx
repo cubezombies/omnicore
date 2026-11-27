@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Platform, Publication, QaRun, TikTokPostOptions } from '../../../shared/operations';
 import { TikTokPostDialog } from './TikTokPostDialog';
 import { PronunciationPanel } from './PronunciationPanel';
+import { MusicPanel } from './MusicPanel';
 import type { Business } from '../../../shared/business';
 import {
   CLAIM_KIND_LABELS,
@@ -158,6 +159,7 @@ export function ProductionDetail({ production: p, onDeleted, business }: { produ
       </div>
 
       {p.storyboard && business && <PronunciationPanel production={p} business={business} />}
+      {p.storyboard && <MusicPanel production={p} />}
 
       {p.storyboard && (
         <section>

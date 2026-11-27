@@ -8,6 +8,7 @@ import type { ProductionRepository } from '../db/productions';
 import type { Platform, PlatformAppSummary, Privacy, Publication, TikTokCreatorInfo, TikTokPostOptions } from '../../shared/operations';
 import { OAuthError, type SecretBox, type TokenSet } from './oauth';
 import type { PlatformApp, PlatformClient } from './platforms';
+import { allowedFor } from '../audio/sound';
 
 export class PublishBlockedError extends Error {}
 
@@ -222,6 +223,11 @@ export class Publisher {
     const qa = this.d.ops.qaRuns(productionId).at(-1);
     if (!qa || qa.status !== 'passed') out.push(`Quality check has not passed${qa ? ` (last result: ${qa.status})` : ''}.`);
     if (p.approval !== 'approved') out.push('Not approved for publication.');
+    // Music or effects limited to other platforms (or attached only on a platform) never go out in this video.
+    for (const a of p.assets.filter((x) => x.kind === 'music' || x.kind === 'sfx')) {
+      const r = allowedFor({ usage: (a.meta.usage as 'embedded' | 'platform_native') ?? 'embedded', restrictions: (a.meta.restrictions as { platforms?: string[] }) ?? {} }, [platform]);
+      if (!r.ok) out.push(`"${a.attribution}" is not licensed for ${platform}. Re-render with music cleared for ${platform}.`);
+    }
     const dest = p.destinations.find((d) => d.platform === platform);
     if (!dest) out.push(`No ${platform} destination is assigned to this production.`);
     else {

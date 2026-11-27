@@ -29,6 +29,7 @@ import { checkPronunciations, englishWords, type PronunciationRepository } from 
 import type { PreviewEngine } from '../shared/production';
 import { BusinessContextError, type BusinessContext, type OwnedKind } from './business/context';
 import * as v from './validation';
+import { discoverMusicFor } from './audio/discovery';
 
 type Handler = (...args: unknown[]) => unknown;
 type InvokeKey = Exclude<keyof AppApi, 'onProductionChanged' | 'onBusinessChanged'>;
@@ -240,6 +241,44 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       return engine.produceIdea(iid, 'user', rel.onTopic ? 'chosen by user' : `chosen by user despite off-topic warning (${rel.reason})`);
     },
     ideaRelevance: (id) => engine.ideaRelevance(own('idea', id)),
+    getSoundProfile: () => ops.getSoundProfile(cur()),
+    saveSoundProfile: (s) => {
+      const bid = cur();
+      const saved = ops.saveSoundProfile(bid, v.soundProfile(s));
+      audit.record({ actor: 'user', businessId: bid, type: 'sound.profile', data: { ...saved } });
+      return saved;
+    },
+    getMusicOverride: (id) => ops.getMusicOverride(own('production', id)),
+    setMusicOverride: (id, o) => {
+      const pid = own('production', id);
+      const choice = v.musicOverride(o);
+      if (choice.mode === 'track') {
+        const t = library.get(choice.trackId!);
+        if (t.kind !== 'music') throw new Error(`"${t.title}" is a sound effect, not music.`);
+      }
+      const before = ops.getMusicOverride(pid);
+      ops.setMusicOverride(pid, choice);
+      audit.record({ actor: 'user', businessId: cur(), type: 'audio.override', productionId: pid, data: { before, after: choice } });
+      return ops.getMusicOverride(pid);
+    },
+    discoverMusic: async (m) => {
+      // Finds openly licensed instrumental tracks for a mood and imports the ones whose licence checks out.
+      const mood = v.mood(m);
+      const s = productions.getSettings();
+      const r = await discoverMusicFor(mood, { allowShareAlike: s.allowShareAlike, limit: 4, signal: AbortSignal.timeout(180_000) });
+      const imported = [];
+      const refused = r.refused.map((x) => `${x.title}: ${x.reason}`);
+      for (const a of r.found) {
+        try {
+          const t = await library.importDiscovered(a, mood, AbortSignal.timeout(180_000), s.allowShareAlike);
+          imported.push(t);
+          audit.record({ actor: 'user', businessId: cur(), type: 'audio.discovered', subjectType: 'audio', subjectId: String(t.id), data: { title: t.title, license: t.license, attribution: t.attribution, rights: t.rights } });
+        } catch (e) {
+          refused.push((e as Error).message);
+        }
+      }
+      return { imported, refused };
+    },
     rejectIdea: (id, reason) => {
       const idea = ops.decideIdea(own('idea', id), 'rejected', `rejected by user: ${v.shortText(reason, 'Reason', 300)}`);
       audit.record({ actor: 'user', businessId: idea.brandId, type: 'idea.rejected', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, reason } });

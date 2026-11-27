@@ -267,7 +267,8 @@ if (!app.requestSingleInstanceLock()) {
     const productionsDir = path.join(dataDir, 'productions');
     const tmpDir = path.join(dataDir, 'tmp');
     const dirs = { tmpDir, toolsDir: path.join(dataDir, 'tools'), rasterize: electronRasterize };
-    const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath));
+    const vocalAsr = new SherpaWhisper(path.join(dataDir, 'tools'));
+    const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath), (wav, signal) => (vocalAsr.available() ? vocalAsr.transcribe(wav, signal) : Promise.resolve('')));
     fs.mkdirSync(productionsDir, { recursive: true });
     productions.markInterrupted();
     productions.restoreOutputs(productionsDir);
@@ -288,6 +289,9 @@ if (!app.requestSingleInstanceLock()) {
       library,
       ffmpeg: (s) => resolveFfmpeg(s.ffmpegPath),
       pronunciations: (bid, engine) => pronunciations.resolved(bid, engine),
+      soundProfile: (bid) => ops.getSoundProfile(bid),
+      musicOverride: (pid) => ops.getMusicOverride(pid),
+      recentMusic: (bid, pid) => ops.recentMusic(bid, pid),
       pronunciationCheck: (p) => (p.storyboard ? checkPronunciations(p.storyboard, pronunciations.list(p.channelId), englishWords(dirs.toolsDir)) : []),
       channel: (id) => {
         // Each production is written with its own business's identity and agent instructions, never another's.

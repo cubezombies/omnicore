@@ -40,6 +40,8 @@ export interface RenderPlan {
   music?: { path: string; volume: number };
   /** One-shot effect mixed in at each listed time (e.g. a whoosh at scene cuts). */
   sfx?: { path: string; volume: number; atSec: number[] };
+  /** More accents (intro riser, outro accent), each its own file, volume and times. */
+  cues?: { path: string; volume: number; atSec: number[] }[];
 }
 
 /** Times (s) at which a transition effect starts: slightly before each cut so it peaks on the cut. */
@@ -74,8 +76,9 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   for (const s of p.scenes) args.push('-i', s.audio);
   const musicInput = audioBase + n;
   if (p.music) args.push('-stream_loop', '-1', '-i', p.music.path);
-  const sfxTimes = p.sfx?.atSec.filter((t) => t >= 0) ?? [];
-  if (p.sfx && sfxTimes.length) args.push('-i', p.sfx.path);
+  // Every accent group (transitions, intro, outro) is one input; each group's times are delayed copies of it.
+  const groups = [...(p.sfx ? [p.sfx] : []), ...(p.cues ?? [])].map((g) => ({ ...g, atSec: g.atSec.filter((t) => t >= 0) })).filter((g) => g.atSec.length);
+  for (const g of groups) args.push('-i', g.path);
   const sfxInput = musicInput + (p.music ? 1 : 0);
 
   const W2 = Math.round(VIDEO_W * 1.25);
@@ -161,17 +164,19 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   } else {
     f.push(`[narr]anull[bed]`);
   }
-  if (p.sfx && sfxTimes.length) {
-    const k = sfxTimes.length;
-    f.push(
-      `[${sfxInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${p.sfx.volume.toFixed(3)}` +
-        (k > 1 ? `,asplit=${k}${sfxTimes.map((_, i) => `[sx${i}]`).join('')}` : '[sx0]')
-    );
-    sfxTimes.forEach((t, i) => {
-      const ms = Math.round(t * 1000);
-      f.push(`[sx${i}]adelay=${ms}|${ms}[sd${i}]`);
+  if (groups.length) {
+    const labels: string[] = [];
+    groups.forEach((g, gi) => {
+      const k = g.atSec.length;
+      const names = g.atSec.map((_, i) => `[sx${gi}_${i}]`);
+      f.push(`[${sfxInput + gi}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${g.volume.toFixed(3)}` + (k > 1 ? `,asplit=${k}${names.join('')}` : names[0]));
+      g.atSec.forEach((t, i) => {
+        const ms = Math.round(t * 1000);
+        f.push(`${names[i]}adelay=${ms}|${ms}[sd${gi}_${i}]`);
+        labels.push(`[sd${gi}_${i}]`);
+      });
     });
-    f.push(`[bed]${sfxTimes.map((_, i) => `[sd${i}]`).join('')}amix=inputs=${k + 1}:duration=first:dropout_transition=0:normalize=0[amix]`);
+    f.push(`[bed]${labels.join('')}amix=inputs=${labels.length + 1}:duration=first:dropout_transition=0:normalize=0[amix]`);
   } else {
     f.push(`[bed]anull[amix]`);
   }

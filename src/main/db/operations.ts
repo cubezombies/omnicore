@@ -16,6 +16,7 @@ import {
   type ScoreDetail
 } from '../../shared/operations';
 import { NotFoundError } from './repository';
+import { DEFAULT_SOUND_PROFILE, type MusicOverride, type SoundProfile } from '../../shared/production';
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 type Row = Record<string, unknown>;
@@ -79,6 +80,33 @@ export class OperationsRepository {
   saveAutonomy(businessId: number, s: AutonomySettings): AutonomySettings {
     this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.autonomyKey(businessId), JSON.stringify(s));
     return this.getAutonomy(businessId);
+  }
+
+  // ---- sound ------------------------------------------------------------------
+  private soundKey = (businessId: number) => `business:${businessId}:sound`;
+  getSoundProfile(businessId: number): SoundProfile {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.soundKey(businessId)) as Row | undefined;
+    return { ...DEFAULT_SOUND_PROFILE, ...(r ? (JSON.parse(String(r.value)) as Partial<SoundProfile>) : {}) };
+  }
+  saveSoundProfile(businessId: number, s: SoundProfile): SoundProfile {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.soundKey(businessId), JSON.stringify(s));
+    return this.getSoundProfile(businessId);
+  }
+  private overrideKey = (productionId: number) => `production:${productionId}:music`;
+  getMusicOverride(productionId: number): MusicOverride | null {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.overrideKey(productionId)) as Row | undefined;
+    return r ? (JSON.parse(String(r.value)) as MusicOverride) : null;
+  }
+  setMusicOverride(productionId: number, o: MusicOverride): void {
+    if (o.mode === 'auto') this.db.prepare('DELETE FROM settings WHERE key = ?').run(this.overrideKey(productionId));
+    else this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.overrideKey(productionId), JSON.stringify(o));
+  }
+  /** Music tracks this business used in its most recent productions (newest first), for variety. */
+  recentMusic(businessId: number, beforeProductionId: number, limit = 3): number[] {
+    const rows = this.db
+      .prepare(`SELECT a.meta FROM production_assets a JOIN productions p ON p.id = a.production_id WHERE p.channel_id = ? AND a.kind = 'music' AND p.id < ? ORDER BY p.id DESC LIMIT ?`)
+      .all(businessId, beforeProductionId, limit) as Row[];
+    return rows.map((r) => Number(j(r.meta, {} as { trackId?: number }).trackId)).filter((x) => Number.isFinite(x) && x > 0);
   }
 
   // ---- brands -----------------------------------------------------------------

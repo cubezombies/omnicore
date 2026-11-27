@@ -18,6 +18,12 @@ const tag = (w: string) => `#${w.replace(/[^\p{L}\p{N}]/gu, '')}`;
  * Platform metadata from the production's own data only (title, sourced hook, credits).
  * Nothing here adds claims the script does not contain.
  */
+/** Credit line for music whose licence requires attribution (e.g. CC BY): title, creator, licence and source page. */
+export function musicCredit(p: Pick<Production, 'assets'>): string {
+  const credited = p.assets.filter((a) => (a.kind === 'music' || a.kind === 'sfx') && (a.meta?.rights as { attributionRequired?: boolean } | undefined)?.attributionRequired);
+  return credited.length ? `Music: ${credited.map((a) => `${a.attribution}${a.sourceUrl ? ` ${a.sourceUrl}` : ''}`).join('; ')}` : '';
+}
+
 export function buildMetadata(p: Production, dest: ProductionDestination, credits: string, brandName: string): PlatformMetadata {
   const limits = PLATFORM_LIMITS[dest.platform];
   const title = clip(p.storyboard?.title ?? p.topic, dest.platform === 'youtube' ? limits.title : 150);
@@ -26,7 +32,7 @@ export function buildMetadata(p: Production, dest: ProductionDestination, credit
   const base = [...keywords(p.topic, 3).map(tag), '#AI', `#${brandName.replace(/[^\p{L}\p{N}]/gu, '')}`, '#TechNews'];
   const hashtags = [...new Set(base.map((h) => h.toLowerCase()))].map((h) => base.find((b) => b.toLowerCase() === h)!).filter((h) => h.length > 2).slice(0, Math.min(5, limits.hashtags));
   const sourcesLine = publishers.length ? `Sources: ${publishers.join(', ')} (full list in credits).` : '';
-  const caption = clip([hook, sourcesLine, AI_DISCLOSURE_TEXT, hashtags.join(' ')].filter(Boolean).join('\n\n'), limits.caption);
+  const caption = clip([hook, sourcesLine, musicCredit(p), AI_DISCLOSURE_TEXT, hashtags.join(' ')].filter(Boolean).join('\n\n'), limits.caption);
   const manualSteps: string[] = [];
   if (p.assets.some((a) => a.kind === 'music')) manualSteps.push('Music is embedded in the video under its recorded licence; no platform-native sound is attached (not supported by the official publishing APIs).');
   if (dest.platform === 'tiktok') manualSteps.push('TikTok Direct Post from an unaudited app can only post SELF_ONLY (private) to a private account until TikTok audits the app.');

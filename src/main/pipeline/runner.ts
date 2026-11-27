@@ -13,7 +13,7 @@ import type { ProductionRepository } from '../db/productions';
 import type { SoundLibrary } from '../library';
 import { buildAss, buildCues, type SceneTiming, type WordTiming } from '../media/captions';
 import { CancelledError, probe, runFfmpeg } from '../media/ffmpeg';
-import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, transitionTimes, VIDEO_H, VIDEO_W, type Motion, type RenderPlan, type Transition } from '../media/render';
+import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, VIDEO_H, VIDEO_W, type Motion, type RenderPlan, type Transition } from '../media/render';
 import { AI_GENERATED_LABEL, verifyVisualAssets } from '../media/assetPolicy';
 import { notesSource } from '../providers/research';
 import { ProviderUnavailableError, type NarrationProvider, type Providers } from '../providers/types';
@@ -28,7 +28,8 @@ import { effectiveWordsPerSec } from '../providers/registry';
 import { planScene, type VisualKind } from '../media/visualPlan';
 import { wordBudget } from '../providers/writers';
 import type { PlatformMetadata } from '../../shared/operations';
-import { PRODUCTION_FORMATS, type KokoroVoiceId, type PreviewEngine, type Production, type Pronunciation, type PronunciationFinding } from '../../shared/production';
+import { storyMood, soundCues } from '../audio/sound';
+import { DEFAULT_SOUND_PROFILE, PRODUCTION_FORMATS, type MusicOverride, type SoundProfile, type KokoroVoiceId, type PreviewEngine, type Production, type Pronunciation, type PronunciationFinding } from '../../shared/production';
 import { runResearch, type EngineOptions } from '../research/engine';
 import type { RawSource } from '../research/dedupe';
 import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS } from '../../shared/production';
@@ -55,6 +56,12 @@ export interface RunnerDeps {
   pronunciations?: (businessId: number, engine: PreviewEngine) => Pronunciation[];
   /** Terms in a script whose pronunciation nobody has confirmed (0.7). */
   pronunciationCheck?: (p: Production) => PronunciationFinding[];
+  /** The business's sound profile (music required, moods, accents, discovery). */
+  soundProfile?: (businessId: number) => SoundProfile;
+  /** A manual music choice for one production, if any (set from the production page, audited). */
+  musicOverride?: (productionId: number) => MusicOverride | null;
+  /** Music tracks the business used most recently (for variety). */
+  recentMusic?: (businessId: number, beforeProductionId: number) => number[];
   /** Test seam: replaces the FFmpeg render call. */
   render?: (args: string[], cwd: string, signal: AbortSignal, onProgress: (f: number) => void, totalSec: number) => Promise<void>;
 }
@@ -533,18 +540,34 @@ export class ProductionRunner {
       if (!fs.existsSync(path.join(c.dir, plan.captions))) throw new Error('Captions are missing. Re-run Captions.');
       this.removeAssets(c.id, 'music');
       this.removeAssets(c.id, 'sfx');
-      if (this.d.library && (c.settings.musicMode !== 'none' || c.settings.sfxTransitions)) {
+      if (this.d.library) {
         const lib = this.d.library;
-        // Mood follows the content and its pace: news or brisk narration gets the upbeat bed, explainers the calm one.
+        const prod = this.d.repo.get(c.id);
+        // Without a business profile (tests, tools), nothing is downloaded: discovery is a business choice.
+        const profile = this.d.soundProfile ? { ...DEFAULT_SOUND_PROFILE, ...this.d.soundProfile(prod.channelId) } : { ...DEFAULT_SOUND_PROFILE, autoDiscover: false };
+        // The global "no music" setting still applies to manual productions; autonomous ones always carry music.
+        if (c.settings.musicMode === 'none' && prod.origin !== 'autonomous' && !this.d.soundProfile) profile.music = 'off';
+        const override = this.d.musicOverride?.(c.id) ?? (c.settings.musicMode === 'track' && c.settings.musicTrackId ? { mode: 'track' as const, trackId: c.settings.musicTrackId } : null);
+        // Mood follows the story (subject first, then pace), within the business's preferred moods.
         const narr = this.d.repo.assets(c.id, 'narration');
         const words = p.storyboard.scenes.reduce((s, sc) => s + sc.narration.split(/\s+/).filter(Boolean).length, 0);
         const secs = narr.reduce((s, a) => s + Number(a.meta.durationSec ?? 0), 0);
-        const pace = secs > 0 ? words / secs : 0;
-        const mood = this.d.repo.get(c.id).mode === 'news' || pace > 2.6 ? 'upbeat' : 'calm';
-        const { music, sfx } = await lib.pick(c.settings, c.id, c.signal, mood);
-        if (music) plan.music = { path: lib.pathOf(music), volume: c.settings.musicVolume };
-        if (sfx) plan.sfx = { path: lib.pathOf(sfx), volume: c.settings.sfxVolume, atSec: transitionTimes(plan) };
-        for (const t of [music, sfx]) {
+        const mood = storyMood(p.storyboard, prod.mode, secs > 0 ? words / secs : 0, profile.preferredMoods);
+        const platforms = [...new Set(prod.destinations.map((d) => d.platform))];
+        const sel = await lib.select(c.settings, c.id, { mood, platforms, profile, override, recentTrackIds: this.d.recentMusic?.(prod.channelId, c.id) ?? [], signal: c.signal });
+        for (const t of sel.discovered) this.audit({ type: 'audio.discovered', productionId: c.id, subjectType: 'audio', subjectId: String(t.id), data: { title: t.title, license: t.license, attribution: t.attribution, rights: t.rights } });
+        if (sel.refused.length) this.audit({ type: 'audio.refused', productionId: c.id, data: { mood, refused: sel.refused } });
+        const durations = plan.scenes.map((s) => s.durationSec);
+        const cues = soundCues(durations, { intro: !!sel.intro, transitions: !!sel.transition, outro: !!sel.outro });
+        const at = (role: string) => cues.filter((q) => q.role === role).map((q) => q.atSec);
+        if (sel.music) plan.music = { path: lib.pathOf(sel.music), volume: profile.musicVolume ?? c.settings.musicVolume };
+        if (sel.transition) plan.sfx = { path: lib.pathOf(sel.transition), volume: c.settings.sfxVolume, atSec: at('transition') };
+        plan.cues = [
+          ...(sel.intro ? [{ path: lib.pathOf(sel.intro), volume: c.settings.sfxVolume * 0.6, atSec: at('intro') }] : []),
+          ...(sel.outro ? [{ path: lib.pathOf(sel.outro), volume: c.settings.sfxVolume * 0.7, atSec: at('outro') }] : [])
+        ];
+        this.audit({ type: 'audio.selected', productionId: c.id, data: { mood, platforms, override: override ?? null, music: sel.music ? { id: sel.music.id, title: sel.music.title, license: sel.music.license } : null, accents: cues.length } });
+        for (const t of [sel.music, sel.transition, sel.intro, sel.outro]) {
           if (!t) continue;
           this.d.repo.addAsset(c.id, {
             kind: t.kind === 'music' ? 'music' : 'sfx',
@@ -554,7 +577,7 @@ export class ProductionRunner {
             sourceUrl: t.sourceUrl,
             license: t.license,
             attribution: `${t.title}${t.attribution ? ` by ${t.attribution}` : ''}${t.license ? `, ${t.license}` : ''}`,
-            meta: { trackId: t.id, usage: t.usage, commercialUse: t.commercialUse, licenceEvidence: this.retain('audio-licence', JSON.stringify({ title: t.title, license: t.license, attribution: t.attribution, sourceUrl: t.sourceUrl, origin: t.origin, usage: t.usage, commercialUse: t.commercialUse, restrictions: t.restrictions })) }
+            meta: { trackId: t.id, role: t === sel.music ? 'music' : t === sel.intro ? 'intro' : t === sel.outro ? 'outro' : 'transition', mood: t === sel.music ? mood : undefined, usage: t.usage, commercialUse: t.commercialUse, restrictions: t.restrictions, rights: t.rights, platforms, licenceEvidence: this.retain('audio-licence', JSON.stringify({ title: t.title, license: t.license, attribution: t.attribution, sourceUrl: t.sourceUrl, origin: t.origin, usage: t.usage, commercialUse: t.commercialUse, restrictions: t.restrictions, rights: t.rights, platforms })) }
           });
         }
       }
@@ -603,7 +626,7 @@ export class ProductionRunner {
         this.refreshPublishing(c);
         c.progress(Math.min(0.9, round * 0.3), `QA round ${round}: inspecting…`);
         const p = this.d.repo.get(c.id);
-        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal, pronunciation: this.d.pronunciationCheck?.(p) });
+        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal, pronunciation: this.d.pronunciationCheck?.(p), musicRequired: this.musicRequired(p) });
         const sum = summarise(results);
         const repairs = [...new Set(results.filter((r) => !r.passed && r.repairAction && (r.severity === 'critical' || r.severity === 'major')).map((r) => r.repairAction!))];
         const canRepair = repairs.length > 0 && round <= maxRounds;
@@ -636,6 +659,12 @@ export class ProductionRunner {
     const b: ProviderSettings = pres.engine === 'sherpa' ? { ...s, narration: 'sherpa', sherpaVoice: pres.voice as KokoroVoiceId } : pres.engine === 'windows-sapi' ? { ...s, narration: 'windows-sapi', voice: pres.voice } : s;
     // Each business narrates with its own dictionary (plus shared entries), resolved for the engine actually speaking.
     return this.d.pronunciations ? { ...b, pronunciations: this.d.pronunciations(channelId, b.narration) } : b;
+  }
+
+  /** Whether this production must carry music (business profile; manual productions honour "no music" in settings). */
+  private musicRequired(p: Production): boolean {
+    if (this.d.soundProfile) return this.d.soundProfile(p.channelId).music !== 'off';
+    return !(this.d.settings().musicMode === 'none' && p.origin !== 'autonomous');
   }
 
   private audit(e: { type: string; productionId?: number; subjectType?: string; subjectId?: string; data?: Record<string, unknown> }): void {

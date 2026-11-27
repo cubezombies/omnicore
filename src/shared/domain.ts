@@ -18,7 +18,9 @@ import type {
   ProductionSummary,
   ProviderSettings,
   ProviderStatus,
-  StepName
+  StepName,
+  SoundProfile,
+  MusicOverride
 } from './production';
 
 export const STAGES = ['idea', 'research', 'script', 'production', 'review', 'published'] as const;
@@ -175,6 +177,14 @@ export interface AppApi {
   /** Start a production from an idea. Off-topic ideas are refused ("OFF_TOPIC: ...") unless confirmOffTopic is true. */
   produceIdea(ideaId: number, confirmOffTopic?: boolean): Promise<number>;
   ideaRelevance(ideaId: number): Promise<{ onTopic: boolean; keywordHits: string[]; anchorHits: string[]; reason: string }>;
+  /** The active business's sound profile (music required, moods, accents, discovery, volume). */
+  getSoundProfile(): Promise<SoundProfile>;
+  saveSoundProfile(s: SoundProfile): Promise<SoundProfile>;
+  /** A manual music choice for one production (audited). Re-render to apply. */
+  getMusicOverride(productionId: number): Promise<MusicOverride | null>;
+  setMusicOverride(productionId: number, o: MusicOverride): Promise<MusicOverride | null>;
+  /** Find and import openly licensed instrumental music for a mood (licence-checked; unclear rights are refused). */
+  discoverMusic(mood: 'calm' | 'upbeat' | 'tense' | 'inspiring'): Promise<{ imported: AudioTrack[]; refused: string[] }>;
   rejectIdea(ideaId: number, reason: string): Promise<void>;
   listAccounts(): Promise<PlatformAccount[]>;
   addAccount(platform: Platform, handle: string): Promise<PlatformAccount>;
@@ -268,6 +278,11 @@ export const IPC = {
   listIdeas: 'ops:ideas:list',
   produceIdea: 'ops:ideas:produce',
   ideaRelevance: 'ops:ideas:relevance',
+  getSoundProfile: 'sound:profile:get',
+  saveSoundProfile: 'sound:profile:save',
+  getMusicOverride: 'sound:override:get',
+  setMusicOverride: 'sound:override:set',
+  discoverMusic: 'sound:discover',
   rejectIdea: 'ops:ideas:reject',
   listAccounts: 'accounts:list',
   addAccount: 'accounts:add',

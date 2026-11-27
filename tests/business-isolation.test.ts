@@ -81,7 +81,7 @@ beforeEach(() => {
 
 describe('business management', () => {
   it('migrates existing data to AI, Actually and creates new businesses from a type template', () => {
-    expect(SCHEMA_VERSION).toBe(11);
+    expect(SCHEMA_VERSION).toBe(12);
     const a = businesses.get(A);
     expect(a).toMatchObject({ name: 'AI, Actually', businessType: 'media', modules: ['media'], archivedAt: null, presenterVoice: 'af_heart' });
     expect(businesses.get(B)).toMatchObject({ name: 'Ledger Labs', slug: 'ledger-labs', businessType: 'services', modules: ['services'] });
@@ -261,7 +261,7 @@ describe('migration of the real AI, Actually database', () => {
     before.close();
     const db2 = openDatabase(copy);
     for (const t of tables) expect(count(db2, t), t).toBe(counts[t]);
-    expect(Number((db2.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)).toBe(11);
+    expect(Number((db2.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)).toBe(12);
     expect((db2.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check).toBe('ok');
     expect(db2.prepare('SELECT COUNT(*) n FROM platform_accounts WHERE business_id IS NULL').get()).toEqual({ n: 0 });
     expect(db2.prepare("SELECT key FROM settings ORDER BY key").all().map((r) => (r as { key: string }).key)).toEqual(['activeBusiness', 'business:1:autonomy', 'business:1:platformApp:tiktok', 'legacyAuditBusiness', 'legacyAuditMaxId', 'providers']);

@@ -199,3 +199,16 @@ describe('publishing gates and verification', () => {
     expect(publisher.publications(auto)[0]?.status).toBe('published');
   });
 });
+
+describe('platform-restricted music never reaches another platform', () => {
+  it('blocks publishing when a track is limited to other platforms or is platform-only', () => {
+    const { publisher } = setup();
+    const id = readyProduction();
+    expect(publisher.blockers(id, 'tiktok').join(' ')).not.toMatch(/not licensed/);
+    productions.addAsset(id, { kind: 'music', sceneIndex: null, path: 'library:x.mp3', provider: 'sound-library', sourceUrl: '', license: 'Test licence', attribution: 'YouTube-only track', meta: { usage: 'embedded', commercialUse: 'yes', restrictions: { platforms: ['youtube'] } } });
+    expect(publisher.blockers(id, 'tiktok').join(' ')).toMatch(/"YouTube-only track" is not licensed for tiktok/);
+    const id2 = readyProduction();
+    productions.addAsset(id2, { kind: 'music', sceneIndex: null, path: 'library:cml.mp3', provider: 'sound-library', sourceUrl: '', license: 'TikTok CML', attribution: 'CML track', meta: { usage: 'platform_native', commercialUse: 'yes', restrictions: { platforms: ['tiktok'] } } });
+    expect(publisher.blockers(id2, 'tiktok').join(' ')).toMatch(/"CML track" is not licensed for tiktok/);
+  });
+});

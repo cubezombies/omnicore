@@ -411,6 +411,10 @@ const MIGRATIONS: string[] = [
     SELECT RAISE(ABORT, 'Production numbers are never reused.') WHERE NEW.id <= (SELECT max_id FROM id_high_water WHERE name = 'productions');
     UPDATE id_high_water SET max_id = NEW.id WHERE name = 'productions';
   END;
+  `,
+  // v12: rights ledger for library sounds (provider, track id, licence URL, source page, evidence hash).
+  `
+  ALTER TABLE audio_library ADD COLUMN rights TEXT NOT NULL DEFAULT '{}';
   `
 ];
 

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { PLATFORMS, type AutonomySettings, type Platform, type Privacy, type TikTokPostOptions } from '../shared/operations';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
-import type { PronunciationDraft } from '../shared/production';
+import type { MusicOverride, PronunciationDraft, SoundProfile } from '../shared/production';
 import { isBusinessType, isModuleId, type BusinessDraft, type BusinessPatch, type ModuleId, type Topic, type TopicDraft } from '../shared/business';
 import {
   type PreviewEngine,
@@ -403,6 +403,32 @@ export function topicDraft(v: unknown): TopicDraft {
 export function idList(v: unknown): number[] {
   if (!Array.isArray(v) || v.length > 500) throw new ValidationError('Expected a list of ids');
   return v.map((x) => id(x));
+}
+
+const SOUND_MOODS = ['calm', 'upbeat', 'tense', 'inspiring'] as const;
+export function soundProfile(v: unknown): SoundProfile {
+  if (!v || typeof v !== 'object') throw new ValidationError('Expected a sound profile');
+  const o = v as Record<string, unknown>;
+  const bool = (x: unknown, name: string) => {
+    if (typeof x !== 'boolean') throw new ValidationError(`${name} must be true or false`);
+    return x;
+  };
+  if (o.music !== 'required' && o.music !== 'off') throw new ValidationError('Music must be "required" or "off"');
+  const moods = Array.isArray(o.preferredMoods) ? o.preferredMoods : [];
+  if (!moods.every((m) => (SOUND_MOODS as readonly unknown[]).includes(m))) throw new ValidationError('Unknown mood');
+  const vol = Number(o.musicVolume);
+  if (!Number.isFinite(vol) || vol < 0.02 || vol > 0.5) throw new ValidationError('Music volume must be between 0.02 and 0.5');
+  return { music: o.music, preferredMoods: moods as SoundProfile['preferredMoods'], introAccent: bool(o.introAccent, 'Intro accent'), transitions: bool(o.transitions, 'Transitions'), outroAccent: bool(o.outroAccent, 'Outro accent'), autoDiscover: bool(o.autoDiscover, 'Automatic discovery'), musicVolume: vol };
+}
+export function musicOverride(v: unknown): MusicOverride {
+  const o = (v ?? {}) as Record<string, unknown>;
+  if (o.mode === 'auto' || o.mode === 'none') return { mode: o.mode, trackId: null };
+  if (o.mode === 'track') return { mode: 'track', trackId: id(o.trackId) };
+  throw new ValidationError('Music choice must be auto, none or a track');
+}
+export function mood(v: unknown): (typeof SOUND_MOODS)[number] {
+  if (!(SOUND_MOODS as readonly unknown[]).includes(v)) throw new ValidationError('Unknown mood');
+  return v as (typeof SOUND_MOODS)[number];
 }
 
 /** Scene indexes are zero-based (the first scene is 0). */

@@ -380,10 +380,10 @@ export const DEFAULT_SETTINGS: ProviderSettings = {
   visualsRev: 2,
   comfyUrl: 'http://127.0.0.1:8188',
   comfyCheckpoint: '',
-  musicMode: 'none',
+  musicMode: 'auto',
   musicTrackId: 0,
   musicVolume: 0.12,
-  sfxTransitions: false,
+  sfxTransitions: true,
   sfxVolume: 0.35,
   allowShareAlike: false,
   ffmpegPath: ''
@@ -431,6 +431,42 @@ export interface AudioTrack {
   usage: 'embedded' | 'platform_native';
   commercialUse: 'yes' | 'no' | 'unknown';
   restrictions: { platforms?: string[]; territories?: string[]; accountTypes?: string[]; notes?: string };
+  /** Rights ledger: where the track came from and the evidence that its licence was verified. */
+  rights: AudioRights;
+}
+
+export interface AudioRights {
+  provider?: string;
+  providerTrackId?: string;
+  source?: string;
+  licenseUrl?: string;
+  landingUrl?: string;
+  attributionRequired?: boolean;
+  /** SHA-256 of the provider's record saved at import (library/evidence/<file>.json). */
+  evidenceSha256?: string;
+  verifiedAt?: string;
+}
+
+/** A business's sound: preferred moods, which accents to use and how loud the music sits. */
+export interface SoundProfile {
+  /** Music is required for every video unless this is explicitly turned off. */
+  music: 'required' | 'off';
+  preferredMoods: ('calm' | 'upbeat' | 'tense' | 'inspiring')[];
+  introAccent: boolean;
+  transitions: boolean;
+  outroAccent: boolean;
+  /** Find new licensed tracks automatically when the library has nothing for a story's mood. */
+  autoDiscover: boolean;
+  musicVolume: number;
+}
+
+export const DEFAULT_SOUND_PROFILE: SoundProfile = { music: 'required', preferredMoods: [], introAccent: true, transitions: true, outroAccent: true, autoDiscover: true, musicVolume: 0.12 };
+
+/** A per-production music choice that overrides automatic selection (recorded in the audit log). */
+export interface MusicOverride {
+  trackId: number | null;
+  /** 'auto' clears the override. */
+  mode: 'track' | 'none' | 'auto';
 }
 
 export type AudioTrackPatch = Partial<Pick<AudioTrack, 'title' | 'license' | 'attribution' | 'sourceUrl' | 'tags' | 'commercialUse'>>;
