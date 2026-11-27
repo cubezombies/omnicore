@@ -4,6 +4,21 @@ import { IPC, type AppApi } from '../shared/domain';
 // Narrow, typed bridge. The renderer never sees ipcRenderer itself.
 const api: AppApi = {
   listChannels: () => ipcRenderer.invoke(IPC.listChannels),
+  listBusinesses: (includeArchived) => ipcRenderer.invoke(IPC.listBusinesses, includeArchived),
+  activeBusiness: () => ipcRenderer.invoke(IPC.activeBusiness),
+  switchBusiness: (id) => ipcRenderer.invoke(IPC.switchBusiness, id),
+  createBusiness: (draft) => ipcRenderer.invoke(IPC.createBusiness, draft),
+  updateBusiness: (id, patch) => ipcRenderer.invoke(IPC.updateBusiness, id, patch),
+  archiveBusiness: (id) => ipcRenderer.invoke(IPC.archiveBusiness, id),
+  restoreBusiness: (id) => ipcRenderer.invoke(IPC.restoreBusiness, id),
+  listTopics: () => ipcRenderer.invoke(IPC.listTopics),
+  createTopic: (draft) => ipcRenderer.invoke(IPC.createTopic, draft),
+  updateTopic: (id, patch) => ipcRenderer.invoke(IPC.updateTopic, id, patch),
+  reorderTopics: (parentId, ids) => ipcRenderer.invoke(IPC.reorderTopics, parentId, ids),
+  archiveTopic: (id) => ipcRenderer.invoke(IPC.archiveTopic, id),
+  restoreTopic: (id) => ipcRenderer.invoke(IPC.restoreTopic, id),
+  deleteTopic: (id) => ipcRenderer.invoke(IPC.deleteTopic, id),
+  decideTopicProposal: (id, accept) => ipcRenderer.invoke(IPC.decideTopicProposal, id, accept),
   listContent: (channelId, stages) => ipcRenderer.invoke(IPC.listContent, channelId, stages),
   getContent: (id) => ipcRenderer.invoke(IPC.getContent, id),
   createContent: (channelId, draft) => ipcRenderer.invoke(IPC.createContent, channelId, draft),
@@ -71,6 +86,13 @@ const api: AppApi = {
     };
     ipcRenderer.on(IPC.onProductionChanged, listener);
     return () => ipcRenderer.removeListener(IPC.onProductionChanged, listener);
+  },
+  onBusinessChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, id: unknown) => {
+      if (typeof id === 'number') cb(id);
+    };
+    ipcRenderer.on(IPC.onBusinessChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.onBusinessChanged, listener);
   }
 };
 

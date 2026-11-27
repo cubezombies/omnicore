@@ -65,6 +65,69 @@ export function isFastStart(file: string): boolean {
  * Independent quality assurance. Every check re-derives its verdict from stored
  * evidence and the rendered file — it does not trust flags set by the generation steps.
  */
+/** Pixel spread (standard deviation of a tiny greyscale thumbnail); near zero means a blank or flat image. */
+function imageSpread(ffmpeg: string, file: string, signal?: AbortSignal): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpeg, ['-hide_banner', '-v', 'error', '-i', file, '-vf', 'scale=16:28,format=gray', '-frames:v', '1', '-f', 'rawvideo', 'pipe:1'], { windowsHide: true });
+    const chunks: Buffer[] = [];
+    child.stdout.on('data', (d: Buffer) => chunks.push(d));
+    const onAbort = () => child.kill();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
+      const px = Buffer.concat(chunks);
+      if (code !== 0 || !px.length) return reject(new Error('could not read image'));
+      const mean = px.reduce((s, v) => s + v, 0) / px.length;
+      resolve(Math.sqrt(px.reduce((s, v) => s + (v - mean) ** 2, 0) / px.length));
+    });
+  });
+}
+
+/**
+ * Visual quality gates: every scene has a picture, title-card fallbacks stay rare, the same treatment isn't
+ * repeated scene after scene, enough different kinds of visual are used, and no image is reused.
+ */
+export function visualVarietyFindings(images: Production['assets'], sceneCount: number, exists: (a: Production['assets'][number]) => boolean = () => true): QaCheckResult[] {
+  const out: QaCheckResult[] = [];
+  const byScene = new Map(images.map((a) => [a.sceneIndex, a]));
+  const missing = Array.from({ length: sceneCount }, (_, i) => i).filter((i) => !byScene.has(i) || !exists(byScene.get(i)!));
+  out.push(finding('visuals.coverage', 'visuals', 'critical', missing.length === 0, missing.length ? `Scenes without a picture: ${missing.map((i) => i + 1).join(', ')}.` : `All ${sceneCount} scenes have a picture.`, { missing }, 'revisuals'));
+  const kindOf = (i: number) => {
+    const a = byScene.get(i);
+    return a ? String(a.meta.visualKind ?? (a.provider === 'title-card' ? 'title-card' : a.provider === 'graphics' ? 'graphic' : 'photo')) : 'none';
+  };
+  const kinds = Array.from({ length: sceneCount }, (_, i) => kindOf(i));
+  const cards = images.filter((a) => a.provider === 'title-card').length;
+  const maxCards = Math.max(1, Math.floor(sceneCount * 0.15));
+  out.push(finding('visuals.title-cards', 'visuals', 'major', cards <= maxCards, `${cards} of ${sceneCount} scenes use a plain title card (at most ${maxCards}).`, { cards, maxCards }, 'revisuals'));
+  let run = 1;
+  let longest = sceneCount ? 1 : 0;
+  for (let i = 1; i < kinds.length; i++) {
+    run = kinds[i] === kinds[i - 1] ? run + 1 : 1;
+    longest = Math.max(longest, run);
+  }
+  const distinct = new Set(kinds.filter((k) => k !== 'none')).size;
+  const needDistinct = sceneCount >= 6 ? 3 : sceneCount >= 3 ? 2 : 1;
+  out.push(
+    finding('visuals.variety', 'visuals', 'major', longest <= 2 && distinct >= needDistinct, `${distinct} kinds of visual (${[...new Set(kinds)].join(', ')}); longest run of the same kind: ${longest} scenes (limit 2, at least ${needDistinct} kinds).`, { kinds, longest, distinct }, 'revisuals')
+  );
+  // Quote, source and title cards all read as "text on a dark background"; too many of them is monotony
+  // even when the card types alternate. Judged on the body scenes (the hook title and outro roll are expected).
+  const family = (k: string) => (k === 'photo' ? 'photo' : k === 'stat' || k === 'compare' ? 'data' : k === 'steps' ? 'diagram' : 'text');
+  const body = kinds.slice(1, -1).filter((k) => k !== 'none');
+  const textShare = body.length ? body.filter((k) => family(k) === 'text').length / body.length : 0;
+  if (sceneCount >= 6) {
+    out.push(
+      finding('visuals.monotony', 'visuals', 'major', textShare <= 0.75, `${Math.round(textShare * 100)}% of the body scenes are text cards (limit 75%); families: ${[...new Set(body.map(family))].join(', ')}.`, { textShare: +textShare.toFixed(2) }, 'revisuals')
+    );
+  }
+  const hashes = images.map((a) => String(a.meta.sha256 ?? '')).filter(Boolean);
+  const dup = hashes.length - new Set(hashes).size;
+  out.push(finding('visuals.duplicates', 'visuals', 'major', dup === 0, dup ? `${dup} image(s) are repeated in more than one scene.` : 'No image is used twice.', { duplicates: dup }, 'revisuals'));
+  return out;
+}
+
 export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   const p = ctx.production;
   const out: QaCheckResult[] = [];
@@ -76,7 +139,7 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
     out.push(finding('facts.storyboard', 'facts', 'critical', false, 'No storyboard exists.', {}, 'rescript'));
   } else {
     try {
-      validateStoryboard(sb, p.sources);
+      validateStoryboard(sb, p.sources, PRODUCTION_FORMATS[p.format ?? 'short'].maxScenes);
       out.push(finding('facts.storyboard', 'facts', 'critical', true, 'Storyboard structure and citations are valid.'));
     } catch (e) {
       out.push(finding('facts.storyboard', 'facts', 'critical', false, (e as Error).message, {}, 'rescript'));
@@ -110,7 +173,7 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   const images = p.assets.filter((a) => a.kind === 'image');
   const lic = verifyVisualAssets(images, { allowShareAlike: ctx.allowShareAlike });
   out.push(finding('rights.visuals', 'rights', 'critical', lic.length === 0, lic.length ? lic.join(' ') : `All ${images.length} visuals have a verified licence or are generated.`, { problems: lic }, 'revisuals'));
-  const external = images.filter((a) => a.provider === 'wikimedia-commons');
+  const external = images.filter((a) => a.provider === 'wikimedia-commons' || a.provider === 'openverse');
   const missingEvidence = external.filter((a) => !a.meta.evidenceHash);
   out.push(finding('rights.evidence', 'rights', 'major', missingEvidence.length === 0, missingEvidence.length ? `${missingEvidence.length} licensed image(s) have no retained licence evidence.` : `Licence evidence retained for ${external.length} external image(s).`, { missing: missingEvidence.map((a) => a.sceneIndex) }, 'revisuals'));
   const sounds = p.assets.filter((a) => a.kind === 'music' || a.kind === 'sfx');
@@ -118,8 +181,16 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   out.push(finding('rights.audio', 'audio', 'critical', badSounds.length === 0, badSounds.length ? `Music/effects without commercial embedded-use permission: ${badSounds.map((a) => a.attribution).join('; ')}` : sounds.length ? `${sounds.length} music/effect track(s) licensed for embedded commercial use.` : 'No music or effects used.', { sounds: sounds.map((s) => s.license) }, 'rerender'));
 
   // ---- visuals ----------------------------------------------------------------
-  const irrelevant = external.filter((a) => !isRelevantFile(String(a.meta.key ?? ''), p.topic, '') && !String(a.meta.via ?? '').startsWith('article:'));
-  out.push(finding('visuals.relevance', 'visuals', 'minor', irrelevant.length === 0, irrelevant.length ? `${irrelevant.length} image(s) may not relate to the topic.` : 'Images come from cited articles or match the topic.', { scenes: irrelevant.map((a) => a.sceneIndex) }));
+  // 0.6.1 assets carry the relevance verdict recorded when they were chosen; older ones fall back to the file-name check.
+  const irrelevant = external.filter((a) => (a.meta.plan ? a.meta.relevant !== true : !isRelevantFile(String(a.meta.key ?? ''), p.topic, '') && !String(a.meta.via ?? '').startsWith('article:')));
+  out.push(finding('visuals.relevance', 'visuals', 'major', irrelevant.length === 0, irrelevant.length ? `${irrelevant.length} image(s) do not match the topic or scene: scenes ${irrelevant.map((a) => (a.sceneIndex ?? 0) + 1).join(', ')}.` : 'Every external image matched the topic and scene when it was chosen.', { scenes: irrelevant.map((a) => a.sceneIndex) }, 'revisuals'));
+  out.push(...visualVarietyFindings(images, sb?.scenes.length ?? 0, (a) => fs.existsSync(path.join(ctx.dir, a.path))));
+  for (const a of images) {
+    const file = path.join(ctx.dir, a.path);
+    if (!fs.existsSync(file)) continue;
+    const sd = await imageSpread(ctx.ffmpeg, file, ctx.signal).catch(() => null);
+    if (sd !== null && sd < 4) out.push(finding('visuals.blank', 'visuals', 'major', false, `Scene ${(a.sceneIndex ?? 0) + 1} looks empty (an almost uniform image).`, { scene: a.sceneIndex, spread: +sd.toFixed(2) }, 'revisuals'));
+  }
   const unlabelledAi = images.filter((a) => a.provider === 'comfyui' && !a.meta.aiGenerated);
   out.push(finding('visuals.ai-label', 'visuals', 'critical', unlabelledAi.length === 0, unlabelledAi.length ? 'AI illustration not marked for on-screen labelling.' : 'No unlabelled AI imagery.', {}, 'revisuals'));
 

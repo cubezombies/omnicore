@@ -36,7 +36,8 @@ const toAccount = (r: Row): PlatformAccount => ({
   tokenExpiresAt: (r.token_expires_at as string) ?? null,
   lastAuthAt: (r.last_auth_at as string) ?? null,
   lastError: (r.last_error as string) ?? null,
-  createdAt: String(r.created_at)
+  createdAt: String(r.created_at),
+  businessId: r.business_id === null || r.business_id === undefined ? null : Number(r.business_id)
 });
 
 const toDest = (r: Row): BrandDestination => ({
@@ -70,13 +71,14 @@ export class OperationsRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   // ---- autonomy settings ----------------------------------------------------
-  getAutonomy(): AutonomySettings {
-    const r = this.db.prepare(`SELECT value FROM settings WHERE key = 'autonomy'`).get() as { value: string } | undefined;
-    return { ...DEFAULT_AUTONOMY, ...(r ? (JSON.parse(r.value) as Partial<AutonomySettings>) : {}) };
+  private autonomyKey = (businessId: number) => `business:${businessId}:autonomy`;
+  getAutonomy(businessId: number): AutonomySettings {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.autonomyKey(businessId)) as Row | undefined;
+    return { ...DEFAULT_AUTONOMY, ...(r ? (JSON.parse(String(r.value)) as Partial<AutonomySettings>) : {}) };
   }
-  saveAutonomy(s: AutonomySettings): AutonomySettings {
-    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('autonomy', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(s));
-    return this.getAutonomy();
+  saveAutonomy(businessId: number, s: AutonomySettings): AutonomySettings {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.autonomyKey(businessId), JSON.stringify(s));
+    return this.getAutonomy(businessId);
   }
 
   // ---- brands -----------------------------------------------------------------
@@ -92,13 +94,14 @@ export class OperationsRepository {
     const r = this.db.prepare('SELECT editorial FROM channels WHERE id = ?').get(brandId) as Row | undefined;
     return j(r?.editorial, {} as { keywords?: string[] }).keywords ?? [];
   }
+  /** Businesses whose automation may run (archived businesses are skipped). */
   brandIds(): number[] {
-    return (this.db.prepare('SELECT id FROM channels ORDER BY id').all() as Row[]).map((r) => Number(r.id));
+    return (this.db.prepare('SELECT id FROM channels WHERE archived_at IS NULL ORDER BY id').all() as Row[]).map((r) => Number(r.id));
   }
 
   // ---- accounts ---------------------------------------------------------------
-  listAccounts(): PlatformAccount[] {
-    return (this.db.prepare('SELECT * FROM platform_accounts ORDER BY platform, handle').all() as Row[]).map(toAccount);
+  listAccounts(businessId: number): PlatformAccount[] {
+    return (this.db.prepare('SELECT * FROM platform_accounts WHERE business_id = ? ORDER BY platform, handle').all(businessId) as Row[]).map(toAccount);
   }
   getAccount(id: number): PlatformAccount {
     const r = this.db.prepare('SELECT * FROM platform_accounts WHERE id = ?').get(id) as Row | undefined;
@@ -106,9 +109,9 @@ export class OperationsRepository {
     return toAccount(r);
   }
   /** Register an account the user intends to use. It stays "not_connected" until an official OAuth flow succeeds. */
-  addAccount(platform: Platform, handle: string, displayName = ''): PlatformAccount {
+  addAccount(businessId: number, platform: Platform, handle: string, displayName = ''): PlatformAccount {
     const h = handle.trim().startsWith('@') ? handle.trim() : `@${handle.trim()}`;
-    const res = this.db.prepare('INSERT INTO platform_accounts (platform, handle, display_name) VALUES (?,?,?)').run(platform, h, displayName);
+    const res = this.db.prepare('INSERT INTO platform_accounts (business_id, platform, handle, display_name) VALUES (?,?,?,?)').run(businessId, platform, h, displayName);
     return this.getAccount(Number(res.lastInsertRowid));
   }
   updateAccountAuth(id: number, p: Partial<Pick<PlatformAccount, 'status' | 'scopes' | 'capabilities' | 'tokenExpiresAt' | 'externalId' | 'displayName' | 'avatarUrl' | 'lastError'>> & { authenticated?: boolean }): PlatformAccount {
@@ -147,7 +150,11 @@ export class OperationsRepository {
     return (this.db.prepare('SELECT * FROM brand_destinations WHERE brand_id = ? ORDER BY platform, id').all(brandId) as Row[]).map(toDest);
   }
   setDestination(brandId: number, platform: Platform, p: { accountId: number | null; enabled: boolean; privacy: BrandDestination['privacy'] }): BrandDestination {
-    if (p.accountId !== null && this.getAccount(p.accountId).platform !== platform) throw new Error('That account belongs to a different platform.');
+    if (p.accountId !== null) {
+      const a = this.getAccount(p.accountId);
+      if (a.businessId !== brandId) throw new Error('That account belongs to a different business.');
+      if (a.platform !== platform) throw new Error('That account belongs to a different platform.');
+    }
     const existing = this.db.prepare('SELECT id FROM brand_destinations WHERE brand_id = ? AND platform = ? AND is_default = 1').get(brandId, platform) as Row | undefined;
     if (existing) {
       this.db.prepare('UPDATE brand_destinations SET account_id = ?, enabled = ?, privacy = ? WHERE id = ?').run(p.accountId, p.enabled ? 1 : 0, p.privacy, Number(existing.id));
@@ -173,6 +180,7 @@ export class OperationsRepository {
       else {
         const a = this.getAccount(d.accountId);
         handle = a.handle;
+        if (a.businessId !== brandId) blockers.push(`${a.handle} belongs to a different business.`);
         if (a.platform !== d.platform) blockers.push(`${a.handle} is a ${a.platform} account, not ${d.platform}.`);
         if (a.status !== 'connected') blockers.push(`${a.handle} is ${a.status.replace('_', ' ')}.`);
         else if (a.tokenExpiresAt && Date.parse(a.tokenExpiresAt) < Date.now()) blockers.push(`${a.handle}'s authorization expired.`);
@@ -250,12 +258,12 @@ export class OperationsRepository {
   }
 
   // ---- incidents ------------------------------------------------------------
-  addIncident(kind: Incident['kind'], description: string, productionId: number | null, assetKey = ''): Incident {
-    const res = this.db.prepare('INSERT INTO incidents (kind, production_id, asset_key, description) VALUES (?,?,?,?)').run(kind, productionId, assetKey, description);
-    return this.listIncidents().find((i) => i.id === Number(res.lastInsertRowid))!;
+  addIncident(businessId: number, kind: Incident['kind'], description: string, productionId: number | null, assetKey = ''): Incident {
+    const res = this.db.prepare('INSERT INTO incidents (business_id, kind, production_id, asset_key, description) VALUES (?,?,?,?,?)').run(businessId, kind, productionId, assetKey, description);
+    return this.listIncidents(businessId).find((i) => i.id === Number(res.lastInsertRowid))!;
   }
-  listIncidents(): Incident[] {
-    return (this.db.prepare('SELECT * FROM incidents ORDER BY id DESC').all() as Row[]).map((r) => ({
+  listIncidents(businessId: number): Incident[] {
+    return (this.db.prepare('SELECT * FROM incidents WHERE business_id = ? ORDER BY id DESC').all(businessId) as Row[]).map((r) => ({
       id: Number(r.id),
       kind: r.kind as Incident['kind'],
       productionId: r.production_id === null ? null : Number(r.production_id),
@@ -271,8 +279,8 @@ export class OperationsRepository {
   }
 
   // ---- engine runs -------------------------------------------------------------
-  startRun(kind: string): number {
-    return Number(this.db.prepare('INSERT INTO engine_runs (kind) VALUES (?)').run(kind).lastInsertRowid);
+  startRun(kind: string, businessId: number | null = null): number {
+    return Number(this.db.prepare('INSERT INTO engine_runs (kind, business_id) VALUES (?, ?)').run(kind, businessId).lastInsertRowid);
   }
   finishRun(id: number, status: 'done' | 'failed' | 'interrupted', detail: string): void {
     this.db.prepare(`UPDATE engine_runs SET status = ?, detail = ?, finished_at = ${NOW} WHERE id = ?`).run(status, detail.slice(0, 4000), id);
@@ -284,7 +292,7 @@ export class OperationsRepository {
   markRunsInterrupted(): number {
     return Number(this.db.prepare(`UPDATE engine_runs SET status = 'interrupted', detail = 'Interrupted by app exit', finished_at = ${NOW} WHERE status = 'running'`).run().changes);
   }
-  autonomousProductionsSince(isoStart: string): number {
-    return Number((this.db.prepare(`SELECT COUNT(*) n FROM productions WHERE origin = 'autonomous' AND created_at >= ?`).get(isoStart) as Row).n);
+  autonomousProductionsSince(isoStart: string, businessId: number): number {
+    return Number((this.db.prepare(`SELECT COUNT(*) n FROM productions WHERE origin = 'autonomous' AND channel_id = ? AND created_at >= ?`).get(businessId, isoStart) as Row).n);
   }
 }

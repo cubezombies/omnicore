@@ -17,6 +17,8 @@ export interface AccountCapabilities {
 }
 
 export interface PlatformAccount {
+  /** Owning business: credentials and publishing never cross businesses. */
+  businessId: number | null;
   id: number;
   platform: Platform;
   handle: string;
@@ -141,6 +143,8 @@ export interface QaRun {
 }
 
 export interface AuditEvent {
+  /** Owning business (events since 0.7; older events belong to the original business). */
+  businessId?: number;
   id: number;
   ts: string;
   actor: string;

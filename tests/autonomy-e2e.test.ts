@@ -51,7 +51,7 @@ run('autonomous operation (real providers)', () => {
 
     // Session 1: the engine runs on its own.
     let s = build();
-    s.ops.saveAutonomy({ ...s.ops.getAutonomy(), enabled: true, activeFromHour: 0, activeToHour: 24, maxProductionsPerDay: 1 });
+    s.ops.saveAutonomy(1, { ...s.ops.getAutonomy(1), enabled: true, activeFromHour: 0, activeToHour: 24, maxProductionsPerDay: 1 });
     const t0 = Date.now();
     s.engine.start();
     await s.engine.tick();
@@ -100,7 +100,7 @@ run('autonomous operation (real providers)', () => {
     const v = s.audit.verify();
     console.log(`LEDGER ${JSON.stringify(v)}`);
     expect(v.ok).toBe(true);
-    expect(s.engine.productionsToday()).toBe(1);
+    expect(s.engine.productionsToday(1)).toBe(1);
     s.db.close();
   }, 1_800_000);
 });

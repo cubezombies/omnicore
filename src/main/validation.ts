@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { PLATFORMS, type AutonomySettings, type Platform, type Privacy, type TikTokPostOptions } from '../shared/operations';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
+import { isBusinessType, isModuleId, type BusinessDraft, type BusinessPatch, type ModuleId, type Topic, type TopicDraft } from '../shared/business';
 import {
   type PreviewEngine,
   type ProductionFormat,
@@ -159,6 +160,7 @@ export function settings(v: unknown): ProviderSettings {
     pronunciations: pronunciations(o.pronunciations),
     voiceWordsPerSec: num(o.voiceWordsPerSec, 'Voice speed', 0, 5),
     visuals: [...new Set(o.visuals as ProviderSettings['visuals'])],
+    visualsRev: 2,
     comfyUrl: httpUrl(o.comfyUrl, 'ComfyUI URL'),
     comfyCheckpoint: str(o.comfyCheckpoint, 'ComfyUI checkpoint', 300),
     musicMode: o.musicMode as ProviderSettings['musicMode'],
@@ -318,4 +320,85 @@ export function tiktokPost(v: unknown): TikTokPostOptions {
   };
   if (out.brandContent && privacyLevel === 'SELF_ONLY') throw new ValidationError('Branded content cannot be private.');
   return out;
+}
+
+// ---- businesses and topics -------------------------------------------------------------
+const words = (v: unknown, name: string, maxItems = 50): string[] => {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length > maxItems || v.some((x) => typeof x !== 'string' || x.length > 100)) throw new ValidationError(`${name} must be a list of up to ${maxItems} short phrases`);
+  return [...new Set((v as string[]).map((x) => x.trim()).filter(Boolean))];
+};
+const accent = (v: unknown): string => {
+  if (typeof v !== 'string' || !/^#[0-9a-f]{6}$/i.test(v)) throw new ValidationError('Colour must look like #5eead4');
+  return v;
+};
+const optText = (o: Record<string, unknown>, k: string, label: string, max: number): string | undefined => (o[k] === undefined ? undefined : str(o[k], label, max));
+
+export function businessDraft(v: unknown): BusinessDraft {
+  const o = object(v, 'business');
+  const name = str(o.name, 'Name', 80).trim();
+  if (!name) throw new ValidationError('Give the business a name');
+  if (!isBusinessType(o.businessType)) throw new ValidationError('Choose a business type');
+  return { name, businessType: o.businessType, description: optText(o, 'description', 'Description', 1000), objectives: optText(o, 'objectives', 'Objectives', 2000), niche: optText(o, 'niche', 'Focus', 200), accent: o.accent === undefined ? undefined : accent(o.accent) };
+}
+
+export function businessPatch(v: unknown): BusinessPatch {
+  const o = object(v, 'business');
+  const out: BusinessPatch = {};
+  if (o.name !== undefined) {
+    out.name = str(o.name, 'Name', 80).trim();
+    if (!out.name) throw new ValidationError('Name cannot be empty');
+  }
+  if (o.description !== undefined) out.description = str(o.description, 'Description', 1000);
+  if (o.objectives !== undefined) out.objectives = str(o.objectives, 'Objectives', 2000);
+  if (o.instructions !== undefined) out.instructions = str(o.instructions, 'Agent instructions', 2000);
+  if (o.niche !== undefined) out.niche = str(o.niche, 'Focus', 200);
+  if (o.accent !== undefined) out.accent = accent(o.accent);
+  if (o.businessType !== undefined) {
+    if (!isBusinessType(o.businessType)) throw new ValidationError('Unknown business type');
+    out.businessType = o.businessType;
+  }
+  if (o.modules !== undefined) {
+    if (!Array.isArray(o.modules) || o.modules.some((m) => !isModuleId(m))) throw new ValidationError('Unknown module');
+    out.modules = [...new Set(o.modules as ModuleId[])];
+  }
+  return out;
+}
+
+export function topicPatch(v: unknown): Partial<TopicDraft> {
+  const o = object(v, 'topic');
+  const out: Partial<TopicDraft> = {};
+  if (o.name !== undefined) {
+    out.name = str(o.name, 'Topic name', 100).trim();
+    if (!out.name) throw new ValidationError('Topic name cannot be empty');
+  }
+  if (o.parentId !== undefined) out.parentId = o.parentId === null ? null : id(o.parentId, 'parentId');
+  if (o.description !== undefined) out.description = str(o.description, 'Description', 1000);
+  if (o.keywords !== undefined) out.keywords = words(o.keywords, 'Keywords');
+  if (o.exclusions !== undefined) out.exclusions = words(o.exclusions, 'Exclusions');
+  if (o.priority !== undefined) {
+    if (!Number.isInteger(o.priority) || (o.priority as number) < 1 || (o.priority as number) > 5) throw new ValidationError('Priority must be 1–5');
+    out.priority = o.priority as number;
+  }
+  if (o.enabled !== undefined) out.enabled = bool(o.enabled);
+  if (o.researchPriority !== undefined) {
+    if (!['low', 'normal', 'high'].includes(o.researchPriority as string)) throw new ValidationError('Research priority must be low, normal or high');
+    out.researchPriority = o.researchPriority as Topic['researchPriority'];
+  }
+  if (o.discovery !== undefined) out.discovery = str(o.discovery, 'Discovery preferences', 1000);
+  if (o.objectives !== undefined) out.objectives = str(o.objectives, 'Content objectives', 1000);
+  if (o.autonomousOk !== undefined) out.autonomousOk = bool(o.autonomousOk);
+  if (o.approvalRequired !== undefined) out.approvalRequired = bool(o.approvalRequired);
+  return out;
+}
+
+export function topicDraft(v: unknown): TopicDraft {
+  const p = topicPatch(v);
+  if (!p.name) throw new ValidationError('Give the topic a name');
+  return p as TopicDraft;
+}
+
+export function idList(v: unknown): number[] {
+  if (!Array.isArray(v) || v.length > 500) throw new ValidationError('Expected a list of ids');
+  return v.map((x) => id(x));
 }

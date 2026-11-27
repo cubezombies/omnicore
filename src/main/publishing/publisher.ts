@@ -51,15 +51,16 @@ export class Publisher {
   constructor(private readonly d: PublisherDeps) {}
 
   // ---- developer apps (encrypted) -------------------------------------------------------
-  private appKey = (p: Platform) => `platformApp:${p}`;
-  getApp(p: Platform): PlatformApp | null {
-    const r = this.d.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.appKey(p)) as { value: string } | undefined;
+  // Developer-app credentials belong to one business; no business can read or use another's.
+  private appKey = (p: Platform, businessId: number) => `business:${businessId}:platformApp:${p}`;
+  getApp(p: Platform, businessId: number): PlatformApp | null {
+    const r = this.d.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.appKey(p, businessId)) as { value: string } | undefined;
     if (!r) return null;
     return JSON.parse(this.d.box.decrypt(Buffer.from(r.value, 'base64'))) as PlatformApp;
   }
-  saveApp(p: Platform, patch: Partial<PlatformApp>): PlatformAppSummary {
+  saveApp(businessId: number, p: Platform, patch: Partial<PlatformApp>): PlatformAppSummary {
     if (!this.d.box.available()) throw new OAuthError('Windows secure storage is unavailable, so credentials cannot be stored safely.');
-    const cur = this.getApp(p) ?? { clientId: '', clientSecret: '', redirectPort: DEFAULT_PORT[p] };
+    const cur = this.getApp(p, businessId) ?? { clientId: '', clientSecret: '', redirectPort: DEFAULT_PORT[p] };
     // Empty strings in the patch mean "keep the stored secret" so the UI never needs to read secrets back.
     const next: PlatformApp = {
       clientId: patch.clientId?.trim() || cur.clientId,
@@ -69,12 +70,12 @@ export class Publisher {
       publicVideoBaseUrl: patch.publicVideoBaseUrl !== undefined ? patch.publicVideoBaseUrl.trim() : cur.publicVideoBaseUrl
     };
     const value = this.d.box.encrypt(JSON.stringify(next)).toString('base64');
-    this.d.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(this.appKey(p), value);
-    this.d.audit.record({ actor: 'user', type: 'platform.app', data: { platform: p, clientId: next.clientId, redirectPort: next.redirectPort, publicVideoBaseUrl: next.publicVideoBaseUrl ?? '' } });
-    return this.appSummary(p);
+    this.d.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(this.appKey(p, businessId), value);
+    this.d.audit.record({ actor: 'user', businessId, type: 'platform.app', data: { platform: p, clientId: next.clientId, redirectPort: next.redirectPort, publicVideoBaseUrl: next.publicVideoBaseUrl ?? '' } });
+    return this.appSummary(p, businessId);
   }
-  appSummary(p: Platform): PlatformAppSummary {
-    const a = this.getApp(p);
+  appSummary(p: Platform, businessId: number): PlatformAppSummary {
+    const a = this.getApp(p, businessId);
     return {
       platform: p,
       configured: p === 'instagram' ? !!a?.accessToken : !!(a?.clientId && a.clientSecret),
@@ -90,8 +91,9 @@ export class Publisher {
   /** Official sign-in; refuses to attach a different account than the one registered. */
   async connect(accountId: number, signal?: AbortSignal) {
     const acct = this.d.ops.getAccount(accountId);
-    const app = this.getApp(acct.platform);
-    if (!app || !this.appSummary(acct.platform).configured) throw new OAuthError(`Set up the ${acct.platform} developer app credentials first.`);
+    if (acct.businessId === null) throw new OAuthError(`${acct.handle} is not assigned to a business.`);
+    const app = this.getApp(acct.platform, acct.businessId);
+    if (!app || !this.appSummary(acct.platform, acct.businessId).configured) throw new OAuthError(`Set up the ${acct.platform} developer app credentials first.`);
     try {
       const { tokens, profile } = await this.d.clients[acct.platform].authorize(app, this.d.open, signal);
       if (norm(acct.handle) && norm(profile.handle) && norm(acct.handle) !== norm(profile.handle) && norm(acct.handle) !== norm(profile.displayName)) {
@@ -109,7 +111,7 @@ export class Publisher {
         lastError: null,
         capabilities: { canPublishPrivate: acct.platform !== 'instagram', canPublishPublic: profile.canPublishPublic, financial: false, restrictions: profile.restrictions }
       });
-      this.d.audit.record({ actor: 'user', type: 'account.connected', subjectType: 'account', subjectId: accountId, data: { platform: a.platform, handle: a.handle, externalId: a.externalId, scopes: a.scopes, capabilities: a.capabilities } });
+      this.d.audit.record({ actor: 'user', businessId: acct.businessId, type: 'account.connected', subjectType: 'account', subjectId: accountId, data: { platform: a.platform, handle: a.handle, externalId: a.externalId, scopes: a.scopes, capabilities: a.capabilities } });
       return a;
     } catch (e) {
       this.d.ops.updateAccountAuth(accountId, { lastError: e instanceof Error ? e.message : String(e) });
@@ -124,13 +126,16 @@ export class Publisher {
    * Pull audience numbers from every connected account (read-only), store a snapshot, and work out
    * monetization progress. Platforms that can't report stats say why instead of showing zeros.
    */
-  async analytics(): Promise<AnalyticsReport> {
+  async analytics(businessId: number): Promise<AnalyticsReport> {
     const capturedAt = new Date().toISOString();
-    const accounts = this.d.ops.listAccounts().filter((a) => a.status === 'connected');
-    const pubs = (this.d.db.prepare(`SELECT * FROM publications WHERE status = 'published' AND remote_id != '' ORDER BY id`).all() as Record<string, unknown>[]).map(toPub);
+    const accounts = this.d.ops.listAccounts(businessId).filter((a) => a.status === 'connected');
+    // Only this business's publications, through this business's accounts: numbers never combine businesses.
+    const pubs = (
+      this.d.db.prepare(`SELECT x.* FROM publications x JOIN productions p ON p.id = x.production_id WHERE p.channel_id = ? AND x.status = 'published' AND x.remote_id != '' ORDER BY x.id`).all(businessId) as Record<string, unknown>[]
+    ).map(toPub);
     const platforms: PlatformAnalytics[] = [];
     const raw: Partial<Record<Platform, PlatformStats>> = {};
-    const ins = this.d.db.prepare('INSERT INTO metric_snapshots (captured_at, platform, account_id, publication_id, followers, views, likes, comments, extra) VALUES (?,?,?,?,?,?,?,?,?)');
+    const ins = this.d.db.prepare('INSERT INTO metric_snapshots (captured_at, platform, account_id, publication_id, followers, views, likes, comments, extra, business_id) VALUES (?,?,?,?,?,?,?,?,?,?)');
     for (const a of accounts) {
       const mine = pubs.filter((p) => p.accountId === a.id);
       const videos = (s?: PlatformStats): VideoStats[] =>
@@ -146,11 +151,11 @@ export class Publisher {
         continue;
       }
       try {
-        const s = await client.stats(await this.tokensFor(a.id), [...new Set(mine.map((p) => p.remoteId))]);
+        const s = await client.stats(await this.tokensFor(a.id, businessId), [...new Set(mine.map((p) => p.remoteId))]);
         raw[a.platform] = s;
-        ins.run(capturedAt, a.platform, a.id, null, s.followers, s.totalViews, null, null, JSON.stringify({ longformWatchHours12m: s.longformWatchHours12m ?? null, shortsViews90d: s.shortsViews90d ?? null, views30d: s.views30d ?? null }));
+        ins.run(capturedAt, a.platform, a.id, null, s.followers, s.totalViews, null, null, JSON.stringify({ longformWatchHours12m: s.longformWatchHours12m ?? null, shortsViews90d: s.shortsViews90d ?? null, views30d: s.views30d ?? null }), businessId);
         const vs = videos(s);
-        for (const v of vs) if (v.views !== null) ins.run(capturedAt, a.platform, a.id, v.publicationId, null, v.views, v.likes, v.comments, '{}');
+        for (const v of vs) if (v.views !== null) ins.run(capturedAt, a.platform, a.id, v.publicationId, null, v.views, v.likes, v.comments, '{}', businessId);
         platforms.push({ platform: a.platform, handle: a.handle, available: true, detail: s.detail ?? '', followers: s.followers, totalViews: s.totalViews, videos: vs });
       } catch (e) {
         platforms.push({ platform: a.platform, handle: a.handle, available: false, detail: e instanceof Error ? e.message : String(e), followers: null, totalViews: null, videos: videos() });
@@ -161,19 +166,21 @@ export class Publisher {
     return { capturedAt, platforms, programs: monetizationPrograms({ youtube: raw.youtube, tiktok: raw.tiktok, youtubePublicUploads90d: ytPublic90 }) };
   }
 
-  private async tokensFor(accountId: number): Promise<TokenSet> {
+  /** Decrypt an account's tokens for work done on behalf of `businessId`; another business's account is refused. */
+  private async tokensFor(accountId: number, businessId: number): Promise<TokenSet> {
     const acct = this.d.ops.getAccount(accountId);
+    if (acct.businessId !== businessId) throw new PublishBlockedError(`${acct.handle} belongs to a different business; its credentials cannot be used here.`);
     const raw = this.d.ops.readToken(accountId);
     if (!raw || acct.status !== 'connected') throw new PublishBlockedError(`${acct.handle} is not connected.`);
     let t = JSON.parse(this.d.box.decrypt(raw)) as TokenSet;
     if (Date.parse(t.expiresAt) - Date.now() < 5 * 60_000) {
       try {
-        t = await this.d.clients[acct.platform].refresh(this.getApp(acct.platform)!, t);
+        t = await this.d.clients[acct.platform].refresh(this.getApp(acct.platform, businessId)!, t);
         this.saveTokens(accountId, t);
         this.d.ops.updateAccountAuth(accountId, { tokenExpiresAt: t.expiresAt, lastError: null });
       } catch (e) {
         this.d.ops.updateAccountAuth(accountId, { status: 'expired', lastError: e instanceof Error ? e.message : String(e) });
-        this.d.audit.record({ actor: 'engine', type: 'account.expired', subjectType: 'account', subjectId: accountId, data: { error: String(e) } });
+        this.d.audit.record({ actor: 'engine', businessId, type: 'account.expired', subjectType: 'account', subjectId: accountId, data: { error: String(e) } });
         throw new PublishBlockedError(`${acct.handle}: sign-in expired and could not be renewed. Reconnect the account.`);
       }
     }
@@ -185,8 +192,10 @@ export class Publisher {
     return (this.d.db.prepare('SELECT * FROM publications WHERE production_id = ? ORDER BY id').all(productionId) as Record<string, unknown>[]).map(toPub);
   }
   /** True once the user has approved a post that the platform confirmed publicly visible: the gate for auto-publish. */
-  hasUserApprovedPublicPost(): boolean {
-    return !!this.d.db.prepare(`SELECT 1 FROM publications WHERE status = 'published' AND approved_by = 'user' AND privacy_applied IN ('PUBLIC_TO_EVERYONE','public') LIMIT 1`).get();
+  hasUserApprovedPublicPost(businessId: number): boolean {
+    return !!this.d.db
+      .prepare(`SELECT 1 FROM publications x JOIN productions p ON p.id = x.production_id WHERE p.channel_id = ? AND x.status = 'published' AND x.approved_by = 'user' AND x.privacy_applied IN ('PUBLIC_TO_EVERYONE','public') LIMIT 1`)
+      .get(businessId);
   }
 
   /** Everything that stops this production from going to this platform right now (empty = ready). */
@@ -219,7 +228,7 @@ export class Publisher {
       const live = this.d.ops.resolveDestinations(p.channelId, [{ platform, accountId: dest.accountId }]).find((d) => d.platform === platform);
       out.push(...(live?.blockers ?? []));
       if (platform === 'instagram' && dest.privacy !== 'public') out.push('Instagram API posts are always public; set the Instagram destination to Public to use it.');
-      if (platform === 'instagram' && !this.getApp('instagram')?.publicVideoBaseUrl) out.push('Instagram needs the video at a public HTTPS URL (not configured).');
+      if (platform === 'instagram' && !this.getApp('instagram', p.channelId)?.publicVideoBaseUrl) out.push('Instagram needs the video at a public HTTPS URL (not configured).');
     }
     const prior = this.publications(productionId).find((x) => x.platform === platform && x.status !== 'failed');
     if (prior) out.push(`Already ${prior.status} on ${platform}.`);
@@ -233,7 +242,7 @@ export class Publisher {
     if (!dest?.accountId) throw new PublishBlockedError('No TikTok account is assigned to this production.');
     const client = this.d.clients.tiktok;
     if (!client.creatorInfo) throw new PublishBlockedError('TikTok creator info is unavailable.');
-    const info = await client.creatorInfo(await this.tokensFor(dest.accountId));
+    const info = await client.creatorInfo(await this.tokensFor(dest.accountId, this.d.productions.get(productionId).channelId));
     // The renderer's CSP allows no remote images, so inline the avatar as a data URL.
     if (/^https:\/\//.test(info.avatarUrl)) {
       try {
@@ -265,8 +274,8 @@ export class Publisher {
     this.d.audit.record({ actor, type: 'publish.started', productionId, data: { platform, accountId: dest.accountId, handle: dest.handle, privacy: tiktok?.privacyLevel ?? dest.privacy, approvedBy, ...(tiktok ? { tiktok: { ...tiktok, caption: undefined } } : {}) } });
     this.syncStatus(productionId);
     try {
-      const tokens = await this.tokensFor(dest.accountId!);
-      const r = await this.d.clients[platform].publish({ tokens, file: p.outputPath!, productionId, metadata: p.metadata[platform], privacy: dest.privacy, app: this.getApp(platform)!, tiktok, signal });
+      const tokens = await this.tokensFor(dest.accountId!, p.channelId);
+      const r = await this.d.clients[platform].publish({ tokens, file: p.outputPath!, productionId, metadata: p.metadata[platform], privacy: dest.privacy, app: this.getApp(platform, p.channelId)!, tiktok, signal });
       set({ status: 'processing', remote_id: r.remoteId, privacy_applied: r.appliedPrivacy, detail: r.notes.join(' ') });
       this.d.audit.record({ actor, type: 'publish.submitted', productionId, data: { platform, remoteId: r.remoteId, appliedPrivacy: r.appliedPrivacy, notes: r.notes } });
       const deadline = Date.now() + (this.d.verifyWaitMs ?? 120_000);
@@ -289,8 +298,9 @@ export class Publisher {
   async verifyOne(publicationId: number): Promise<Publication> {
     const pub = toPub(this.d.db.prepare('SELECT * FROM publications WHERE id = ?').get(publicationId) as Record<string, unknown>);
     if (pub.status !== 'processing' || !pub.accountId) return pub;
-    const tokens = await this.tokensFor(pub.accountId);
-    const v = await this.d.clients[pub.platform].verify(tokens, pub.remoteId, this.getApp(pub.platform)!);
+    const owner = this.d.productions.get(pub.productionId).channelId;
+    const tokens = await this.tokensFor(pub.accountId, owner);
+    const v = await this.d.clients[pub.platform].verify(tokens, pub.remoteId, this.getApp(pub.platform, owner)!);
     if (v.state !== 'processing') {
       this.d.db
         .prepare(`UPDATE publications SET status = ?, url = ?, detail = TRIM(detail || ' ' || ?), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`)

@@ -87,9 +87,9 @@ export type ProductionMode = 'explainer' | 'news';
 
 /** Length formats. Standard (65–120 s) qualifies for programmes that require videos over one minute (e.g. TikTok Creator Rewards). */
 export type ProductionFormat = 'short' | 'standard';
-export const PRODUCTION_FORMATS: Record<ProductionFormat, { label: string; minSec: number; maxSec: number; minClaims: number; maxClaims: number; minSources: number; factScenes: [number, number] }> = {
-  short: { label: 'Short (under 60 s)', minSec: 10, maxSec: 60, minClaims: 1, maxClaims: 6, minSources: 1, factScenes: [3, 5] },
-  standard: { label: 'Standard (65–120 s)', minSec: 65, maxSec: 120, minClaims: 5, maxClaims: 10, minSources: 3, factScenes: [5, 8] }
+export const PRODUCTION_FORMATS: Record<ProductionFormat, { label: string; minSec: number; maxSec: number; minClaims: number; maxClaims: number; minSources: number; factScenes: [number, number]; maxScenes: number }> = {
+  short: { label: 'Short (under 60 s)', minSec: 10, maxSec: 60, minClaims: 1, maxClaims: 6, minSources: 1, factScenes: [3, 5], maxScenes: 10 },
+  standard: { label: 'Standard (65–120 s)', minSec: 65, maxSec: 120, minClaims: 5, maxClaims: 10, minSources: 3, factScenes: [5, 8], maxScenes: 12 }
 };
 export const isProductionFormat = (v: unknown): v is ProductionFormat => v === 'short' || v === 'standard';
 
@@ -193,7 +193,7 @@ export interface Production {
 
 export type ProductionSummary = Omit<Production, 'sources' | 'brief' | 'storyboard' | 'assets' | 'metadata'>;
 
-export const VISUAL_PROVIDERS = ['wikimedia-commons', 'comfyui', 'title-card'] as const;
+export const VISUAL_PROVIDERS = ['wikimedia-commons', 'openverse', 'graphics', 'comfyui', 'title-card'] as const;
 export type VisualProviderId = (typeof VISUAL_PROVIDERS)[number];
 export const WRITERS = ['extractive', 'openai-compatible'] as const;
 export const NARRATORS = ['windows-sapi', 'piper', 'sherpa'] as const;
@@ -294,6 +294,8 @@ export interface ProviderSettings {
   /** Measured speaking speed of the selected voice (words/s), from the last voice sample; 0 = unknown. */
   voiceWordsPerSec: number;
   visuals: VisualProviderId[];
+  /** 2 = settings already offered Openverse and graphics (0.6.1). */
+  visualsRev?: number;
   comfyUrl: string;
   comfyCheckpoint: string;
   /** Background music from the Sound Library: none, a random music track, or a chosen one. */
@@ -327,7 +329,8 @@ export const DEFAULT_SETTINGS: ProviderSettings = {
   sentencePauseSec: 0.32,
   pronunciations: [],
   voiceWordsPerSec: 0,
-  visuals: ['wikimedia-commons', 'title-card'],
+  visuals: ['wikimedia-commons', 'openverse', 'graphics', 'title-card'],
+  visualsRev: 2,
   comfyUrl: 'http://127.0.0.1:8188',
   comfyCheckpoint: '',
   musicMode: 'none',

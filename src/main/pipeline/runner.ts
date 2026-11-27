@@ -13,7 +13,7 @@ import type { ProductionRepository } from '../db/productions';
 import type { SoundLibrary } from '../library';
 import { buildAss, buildCues, type SceneTiming, type WordTiming } from '../media/captions';
 import { CancelledError, probe, runFfmpeg } from '../media/ffmpeg';
-import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, transitionTimes, VIDEO_H, VIDEO_W, type RenderPlan } from '../media/render';
+import { buildRenderArgs, frameAlign, SCENE_PAD_SEC, totalDuration, transitionTimes, VIDEO_H, VIDEO_W, type Motion, type RenderPlan, type Transition } from '../media/render';
 import { AI_GENERATED_LABEL, verifyVisualAssets } from '../media/assetPolicy';
 import { notesSource } from '../providers/research';
 import { ProviderUnavailableError, type NarrationProvider, type Providers } from '../providers/types';
@@ -25,6 +25,7 @@ import { buildMetadata } from '../publishing/metadata';
 import type { Transcriber } from '../qa/asr';
 import { runQaChecks, summarise, type RepairAction } from '../qa/engine';
 import { effectiveWordsPerSec } from '../providers/registry';
+import { planScene, type VisualKind } from '../media/visualPlan';
 import { wordBudget } from '../providers/writers';
 import type { PlatformMetadata } from '../../shared/operations';
 import { PRODUCTION_FORMATS, type KokoroVoiceId } from '../../shared/production';
@@ -38,7 +39,7 @@ export interface RunnerDeps {
   settings: () => ProviderSettings;
   providers: (s: ProviderSettings) => Providers;
   ffmpeg: (s: ProviderSettings) => string;
-  channel: (channelId: number) => { name: string; niche: string };
+  channel: (channelId: number) => { name: string; niche: string; instructions?: string };
   emit: (productionId: number) => void;
   /** Music & Sound Library (optional: without it, renders have narration only). */
   library?: SoundLibrary;
@@ -88,6 +89,19 @@ export function sceneTimeline(storyboard: Storyboard, narration: ProductionAsset
     offset += duration;
     return t;
   });
+}
+
+/** Camera move and transition per scene: photos pan or push, graphics hold nearly still; transitions vary with content. */
+export function sceneMotion(images: ProductionAsset[], i: number): { motion: Motion; transition?: Transition } {
+  const kind = (k: number) => String(images.find((a) => a.sceneIndex === k)?.meta.visualKind ?? 'photo');
+  const photoMoves: Motion[] = ['in', 'left', 'out', 'right'];
+  const k = kind(i);
+  const motion: Motion = k === 'photo' ? photoMoves[i % photoMoves.length] : k === 'title-card' ? 'in' : 'still';
+  if (i === 0) return { motion };
+  const prev = kind(i - 1);
+  const graphicMoves: Transition[] = ['smoothleft', 'smoothup', 'slideleft'];
+  const transition: Transition = prev === 'photo' || k === 'photo' ? 'fade' : k === 'sources' ? 'circleopen' : graphicMoves[i % graphicMoves.length];
+  return { motion, transition };
 }
 
 export class ProductionRunner {
@@ -311,7 +325,8 @@ export class ProductionRunner {
     script: async (c) => {
       const p = this.d.repo.get(c.id);
       if (!p.brief) throw new Error('No brief. Re-run from Brief.');
-      const input = { brief: p.brief, sources: p.sources, channelName: this.d.channel(p.channelId).name };
+      const ch = this.d.channel(p.channelId);
+      const input = { brief: p.brief, sources: p.sources, channelName: ch.name, instructions: ch.instructions };
       const primary = c.providers.writer;
       c.progress(0.1, `Writing with ${primary.label}…`);
       let storyboard: Storyboard;
@@ -380,16 +395,28 @@ export class ProductionRunner {
       const existing = this.d.repo.assets(c.id, 'image');
       const used = new Set(existing.map((a) => String(a.meta.key ?? '')));
       const scenes = p.storyboard.scenes;
+      const channelName = this.d.channel(p.channelId).name;
+      const PHOTO = new Set(['wikimedia-commons', 'openverse', 'comfyui']);
+      let prev: VisualKind | null = null;
       for (const sc of scenes) {
         const have = existing.find((a) => a.sceneIndex === sc.index);
-        if (have && fs.existsSync(path.join(c.dir, have.path))) continue;
+        if (have && fs.existsSync(path.join(c.dir, have.path))) {
+          prev = (have.meta.visualKind as VisualKind | undefined) ?? null;
+          continue;
+        }
         c.progress(sc.index / scenes.length, `Finding a visual for scene ${sc.index + 1} of ${scenes.length}`);
+        // Plan what the scene should show, then try the providers that fit that plan first.
+        const plan = planScene(sc, p.brief, p.sources, channelName, prev);
+        const photos = c.providers.visuals.filter((v) => PHOTO.has(v.id));
+        const graphics = c.providers.visuals.filter((v) => v.id === 'graphics');
+        const rest = c.providers.visuals.filter((v) => !PHOTO.has(v.id) && v.id !== 'graphics');
+        const order = plan.kind === 'photo' ? [...photos, ...graphics, ...rest] : [...graphics, ...photos, ...rest];
         const errors: string[] = [];
         let done = false;
-        for (const v of c.providers.visuals) {
+        for (const v of order) {
           try {
             const r = await v.fetch(
-              { scene: sc, brief: p.brief, sources: p.sources, sceneCount: scenes.length, outBase: path.join(c.dir, 'images', `scene-${pad2(sc.index)}`), usedKeys: used },
+              { scene: sc, brief: p.brief, sources: p.sources, sceneCount: scenes.length, outBase: path.join(c.dir, 'images', `scene-${pad2(sc.index)}`), usedKeys: used, plan },
               c.signal
             );
             if (!r) {
@@ -398,10 +425,11 @@ export class ProductionRunner {
             }
             c.cost(v.costPerUnitUsd);
             used.add(r.key);
+            const visualKind: VisualKind | 'title-card' = v.id === 'graphics' ? plan.graphic.kind : PHOTO.has(v.id) ? 'photo' : 'title-card';
             const lic = r.meta?.licenseRecord as Record<string, unknown> | undefined;
             const evidenceHash = lic ? this.retain('licence-record', JSON.stringify({ key: r.key, ...lic }), r.sourceUrl) : undefined;
             const fileHash = createHash('sha256').update(fs.readFileSync(r.file)).digest('hex');
-            this.audit({ type: 'asset.visual', productionId: c.id, subjectType: 'asset', subjectId: r.key, data: { scene: sc.index + 1, provider: v.id, key: r.key, sourceUrl: r.sourceUrl, license: r.license, attribution: r.attribution, sha256: fileHash, licenceEvidence: evidenceHash, aiGenerated: !!r.meta?.aiGenerated } });
+            this.audit({ type: 'asset.visual', productionId: c.id, subjectType: 'asset', subjectId: r.key, data: { scene: sc.index + 1, provider: v.id, key: r.key, visualKind, plan: plan.kind, planReason: plan.reason, relevance: r.meta?.relevance, sourceUrl: r.sourceUrl, license: r.license, attribution: r.attribution, sha256: fileHash, licenceEvidence: evidenceHash, aiGenerated: !!r.meta?.aiGenerated, generated: !!r.meta?.generated } });
             this.d.repo.addAsset(c.id, {
               kind: 'image',
               sceneIndex: sc.index,
@@ -410,8 +438,9 @@ export class ProductionRunner {
               sourceUrl: r.sourceUrl,
               license: r.license,
               attribution: r.attribution,
-              meta: { ...r.meta, key: r.key, sha256: fileHash, ...(evidenceHash ? { evidenceHash } : {}) }
+              meta: { ...r.meta, key: r.key, sha256: fileHash, visualKind, plan: plan.kind, planReason: plan.reason, ...(evidenceHash ? { evidenceHash } : {}) }
             });
+            prev = visualKind === 'title-card' ? 'title' : visualKind;
             done = true;
             break;
           } catch (e) {
@@ -426,7 +455,7 @@ export class ProductionRunner {
         }
       }
       const counts = new Map<string, number>();
-      for (const a of this.d.repo.assets(c.id, 'image')) counts.set(a.provider, (counts.get(a.provider) ?? 0) + 1);
+      for (const a of this.d.repo.assets(c.id, 'image')) counts.set(String(a.meta.visualKind ?? a.provider), (counts.get(String(a.meta.visualKind ?? a.provider)) ?? 0) + 1);
       c.progress(1, [...counts].map(([k, v]) => `${k} ×${v}`).join(' · '));
     },
 
@@ -457,7 +486,7 @@ export class ProductionRunner {
         scenes: timeline.map((t, i) => {
           const img = images.find((a) => a.sceneIndex === i);
           if (!img) throw new Error(`Scene ${i + 1} has no visual. Re-run Visuals.`);
-          return { image: img.path, audio: t.audio, durationSec: t.duration };
+          return { image: img.path, audio: t.audio, durationSec: t.duration, ...sceneMotion(images, i) };
         }),
         captions: 'captions.ass',
         output: 'render.tmp.mp4'
@@ -515,7 +544,7 @@ export class ProductionRunner {
     },
 
     qa: async (c) => {
-      const maxRounds = this.d.ops?.getAutonomy().maxRepairRounds ?? 2;
+      const maxRounds = this.d.ops?.getAutonomy(this.d.repo.get(c.id).channelId).maxRepairRounds ?? 2;
       const done: string[] = [];
       const plan: Record<RepairAction, StepName[]> = {
         rescript: ['script', 'narration', 'visuals', 'captions', 'render'],

@@ -18,8 +18,9 @@ export function canonical(v: unknown): string {
     .join(',')}}`;
 }
 
+// businessId is part of the hash for events recorded since 0.7 (absent, and therefore not hashed, for older events).
 const eventHash = (e: Omit<AuditEvent, 'id' | 'hash'>) =>
-  sha256(canonical({ ts: e.ts, actor: e.actor, type: e.type, subjectType: e.subjectType, subjectId: e.subjectId, productionId: e.productionId, data: e.data, prevHash: e.prevHash }));
+  sha256(canonical({ ts: e.ts, actor: e.actor, type: e.type, subjectType: e.subjectType, subjectId: e.subjectId, productionId: e.productionId, data: e.data, prevHash: e.prevHash, businessId: e.businessId ?? undefined }));
 
 export interface AuditInput {
   actor: string;
@@ -27,6 +28,8 @@ export interface AuditInput {
   subjectType?: string;
   subjectId?: string | number;
   productionId?: number | null;
+  /** Owning business; taken from the production when omitted. */
+  businessId?: number | null;
   data?: Record<string, unknown>;
 }
 
@@ -51,18 +54,43 @@ export class AuditLedger {
       subjectId: e.subjectId === undefined ? '' : String(e.subjectId),
       productionId: e.productionId ?? null,
       data: e.data ?? {},
-      prevHash: last?.hash ?? GENESIS
+      prevHash: last?.hash ?? GENESIS,
+      businessId: e.businessId ?? this.productionBusiness(e.productionId) ?? undefined
     };
     const hash = eventHash(base);
     const res = this.db
-      .prepare('INSERT INTO audit_events (ts, actor, type, subject_type, subject_id, production_id, data, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(base.ts, base.actor, base.type, base.subjectType, base.subjectId, base.productionId, canonical(base.data), base.prevHash, hash);
+      .prepare('INSERT INTO audit_events (ts, actor, type, subject_type, subject_id, production_id, data, prev_hash, hash, business_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(base.ts, base.actor, base.type, base.subjectType, base.subjectId, base.productionId, canonical(base.data), base.prevHash, hash, base.businessId ?? null);
     return { id: Number(res.lastInsertRowid), ...base, hash };
   }
 
-  events(filter: { productionId?: number; subjectType?: string; subjectId?: string; limit?: number } = {}): AuditEvent[] {
+  private productionBusiness(productionId?: number | null): number | null {
+    if (productionId == null) return null;
+    const r = this.db.prepare('SELECT channel_id FROM productions WHERE id = ?').get(productionId) as { channel_id: number } | undefined;
+    return r ? Number(r.channel_id) : null;
+  }
+
+  /** Business that owned every event recorded before multi-business support (0.7). */
+  private legacyBusiness(): { businessId: number; maxId: number } | null {
+    const get = (k: string) => (this.db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as { value: string } | undefined)?.value;
+    const b = get('legacyAuditBusiness');
+    return b ? { businessId: Number(b), maxId: Number(get('legacyAuditMaxId') ?? 0) } : null;
+  }
+
+  events(filter: { productionId?: number; subjectType?: string; subjectId?: string; limit?: number; businessId?: number } = {}): AuditEvent[] {
     const where: string[] = [];
     const args: (string | number)[] = [];
+    if (filter.businessId !== undefined) {
+      // Events from before 0.7 belong to the original business; later events without a business are system events.
+      const legacy = this.legacyBusiness();
+      if (legacy && legacy.businessId === filter.businessId) {
+        where.push('(business_id = ? OR (business_id IS NULL AND id <= ?))');
+        args.push(filter.businessId, legacy.maxId);
+      } else {
+        where.push('business_id = ?');
+        args.push(filter.businessId);
+      }
+    }
     if (filter.productionId !== undefined) (where.push('production_id = ?'), args.push(filter.productionId));
     if (filter.subjectType) (where.push('subject_type = ?'), args.push(filter.subjectType));
     if (filter.subjectId) (where.push('subject_id = ?'), args.push(filter.subjectId));
@@ -79,7 +107,8 @@ export class AuditLedger {
       productionId: r.production_id === null ? null : Number(r.production_id),
       data: JSON.parse(String(r.data)) as Record<string, unknown>,
       prevHash: String(r.prev_hash),
-      hash: String(r.hash)
+      hash: String(r.hash),
+      ...(r.business_id === null || r.business_id === undefined ? {} : { businessId: Number(r.business_id) })
     }));
     return filter.limit ? out.reverse() : out;
   }

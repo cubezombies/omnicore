@@ -64,8 +64,8 @@ beforeEach(() => {
 
 function setup(tt = fakeTikTok()) {
   const publisher = new Publisher({ db, ops, productions, audit, box, clients: { tiktok: tiktokClient(tt.f), youtube: youtubeClient(tt.f), instagram: instagramClient(tt.f) }, open: browser, verifyWaitMs: 2000, pollMs: 10 });
-  publisher.saveApp('tiktok', { clientId: 'ck', clientSecret: 'cs-secret', redirectPort: 0 });
-  const acct = ops.addAccount('tiktok', '@aiactually');
+  publisher.saveApp(1, 'tiktok', { clientId: 'ck', clientSecret: 'cs-secret', redirectPort: 0 });
+  const acct = ops.addAccount(1, 'tiktok', '@aiactually');
   ops.setDestination(1, 'tiktok', { accountId: acct.id, enabled: true, privacy: 'private' });
   return { publisher, acct, tt };
 }
@@ -100,7 +100,7 @@ describe('accounts: official OAuth and encrypted tokens', () => {
     expect(raw).not.toContain('AT-secret');
     const settingsDump = JSON.stringify(db.prepare('SELECT * FROM settings').all());
     expect(settingsDump).not.toContain('cs-secret');
-    expect(publisher.appSummary('tiktok')).toMatchObject({ configured: true, hasSecret: true, clientId: 'ck' });
+    expect(publisher.appSummary('tiktok', 1)).toMatchObject({ configured: true, hasSecret: true, clientId: 'ck' });
   });
 
   it('refuses to attach a different account than the one registered', async () => {
@@ -160,7 +160,7 @@ describe('publishing gates and verification', () => {
     expect(audit.events({ productionId: id }).map((e) => e.type)).toEqual(expect.arrayContaining(['publish.started', 'publish.submitted', 'publish.verified']));
     expect(publisher.blockers(id, 'tiktok').join(' ')).toMatch(/Already published/);
     // A private post never unlocks auto-publish.
-    expect(publisher.hasUserApprovedPublicPost()).toBe(false);
+    expect(publisher.hasUserApprovedPublicPost(1)).toBe(false);
   });
 
   it('posts exactly what the user chose on the TikTok posting screen', async () => {
@@ -181,7 +181,7 @@ describe('publishing gates and verification', () => {
   it('auto-publishes only after a user-approved public post exists', async () => {
     const { publisher, acct } = setup(fakeTikTok({ privacy: ['SELF_ONLY', 'PUBLIC_TO_EVERYONE'] }));
     await publisher.connect(acct.id);
-    ops.saveAutonomy({ ...ops.getAutonomy(), autoPublish: true });
+    ops.saveAutonomy(1, { ...ops.getAutonomy(1), autoPublish: true });
     const runner = { busy: () => true, enqueue: () => {}, retry: () => {} };
     const engine = new OperatingEngine({ ops, productions, audit, runner: runner as never, publisher, discover: async () => ({ items: 0, candidates: [], sourceReports: [] }) });
     const auto = readyProduction('passed', 'awaiting_review');
@@ -192,7 +192,7 @@ describe('publishing gates and verification', () => {
     ops.setDestination(1, 'tiktok', { accountId: acct.id, enabled: true, privacy: 'public' });
     const first = readyProduction();
     await publisher.publish(first, 'tiktok', 'user');
-    expect(publisher.hasUserApprovedPublicPost()).toBe(true);
+    expect(publisher.hasUserApprovedPublicPost(1)).toBe(true);
 
     await engine.autoPublish(1);
     expect(productions.get(auto).approval).toBe('approved');

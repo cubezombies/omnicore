@@ -86,8 +86,8 @@ describe('accounts and destinations', () => {
   });
 
   it('never grants financial capability and never falls back to another account', () => {
-    const a = ops.addAccount('tiktok', '@first');
-    ops.addAccount('tiktok', '@second');
+    const a = ops.addAccount(brand, 'tiktok', '@first');
+    ops.addAccount(brand, 'tiktok', '@second');
     ops.updateAccountAuth(a.id, { status: 'connected', capabilities: { canPublishPrivate: true, canPublishPublic: true, financial: true as false, restrictions: [] } });
     expect(ops.getAccount(a.id).capabilities.financial).toBe(false);
     // Connected accounts exist, but the brand destination has none assigned: still blocked.
@@ -171,7 +171,7 @@ describe('operating engine', () => {
     });
 
   it('discovers, selects the best idea and creates a destination-assigned autonomous production', async () => {
-    ops.saveAutonomy({ ...ops.getAutonomy(), enabled: true });
+    ops.saveAutonomy(brand, { ...ops.getAutonomy(brand), enabled: true });
     const runner = fakeRunner();
     const engine = make(12, runner);
     engine.start();
@@ -188,7 +188,7 @@ describe('operating engine', () => {
   });
 
   it('respects active hours, the daily limit and the minimum score', async () => {
-    ops.saveAutonomy({ ...ops.getAutonomy(), enabled: true, maxProductionsPerDay: 1 });
+    ops.saveAutonomy(brand, { ...ops.getAutonomy(brand), enabled: true, maxProductionsPerDay: 1 });
     const night = fakeRunner();
     await make(3, night).tick(true);
     expect(night.queued).toHaveLength(0);
@@ -200,7 +200,7 @@ describe('operating engine', () => {
     day.queued.length = 0; // pretend the first production finished
     expect(engine.maybeStartProduction(brand)).toBeNull(); // daily limit reached
 
-    ops.saveAutonomy({ ...ops.getAutonomy(), maxProductionsPerDay: 5, minIdeaScore: 90 });
+    ops.saveAutonomy(brand, { ...ops.getAutonomy(brand), maxProductionsPerDay: 5, minIdeaScore: 90 });
     expect(engine.maybeStartProduction(brand)).toBeNull(); // nothing scores 90
   });
 

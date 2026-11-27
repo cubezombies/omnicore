@@ -29,7 +29,7 @@ export interface WriterResult {
 }
 
 export interface Writer extends ProviderBase {
-  write(input: { brief: Brief; sources: Source[]; channelName: string }, signal: AbortSignal): Promise<WriterResult>;
+  write(input: { brief: Brief; sources: Source[]; channelName: string; instructions?: string }, signal: AbortSignal): Promise<WriterResult>;
 }
 
 export interface NarrationResult {
@@ -52,6 +52,8 @@ export interface VisualRequest {
   outBase: string;
   /** Keys of assets already used in this production (avoid repeats). */
   usedKeys: Set<string>;
+  /** Scene visual plan (0.6.1+): what this scene should show and why. */
+  plan?: import('../media/visualPlan').VisualPlan;
 }
 
 export interface VisualResult {

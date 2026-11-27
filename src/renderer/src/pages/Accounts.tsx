@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { KOKORO_VOICES } from '../../../shared/production';
-import { VoiceList } from '../components/VoiceList';
+import type { Business } from '../../../shared/business';
 import { PLATFORMS, PLATFORM_LABELS, type AuditVerification, type BrandDestination, type Incident, type Platform, type PlatformAccount, type PlatformAppSummary, type Privacy } from '../../../shared/operations';
 import { errorText } from '../components/ProductionDetail';
 
-export function Accounts() {
+export function Accounts(props: { business: Business }) {
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
   const [dests, setDests] = useState<BrandDestination[]>([]);
-  const [presenter, setPresenter] = useState<{ engine: string; voice: string } | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [verify, setVerify] = useState<AuditVerification | null>(null);
   const [newPlatform, setNewPlatform] = useState<Platform>('tiktok');
@@ -20,7 +18,6 @@ export function Accounts() {
   const load = useCallback(() => {
     void window.api.listAccounts().then(setAccounts);
     void window.api.listDestinations().then(setDests);
-    void window.api.getBrandPresenter().then(setPresenter);
     void window.api.listIncidents().then(setIncidents);
     void window.api.platformApps().then(setApps);
   }, []);
@@ -39,8 +36,8 @@ export function Accounts() {
     <section>
       <header className="page-head">
         <div>
-          <h1>Accounts &amp; destinations</h1>
-          <p className="muted">Where AI, Actually publishes. Connecting an account authorizes publishing only — never advertising or spending.</p>
+          <h1>Accounts &amp; Channels</h1>
+          <p className="muted">Accounts and publishing destinations that belong to {props.business.name}. Other businesses can't see or use them. Connecting an account authorizes publishing only — never advertising or spending.</p>
         </div>
       </header>
       {error && <div className="banner error" role="alert">{error}</div>}
@@ -112,19 +109,6 @@ export function Accounts() {
         })}
       </ul>
 
-      {presenter && (
-        <>
-          <h2>Presenter voice</h2>
-          <VoiceList
-            label="AI, Actually presenter (used for this brand regardless of global narration settings)"
-            name="presenterVoice"
-            engine="sherpa"
-            voices={[...KOKORO_VOICES.map((k) => ({ id: k.id as string, label: k.label })), { id: 'global', label: 'Use global narration settings', previewable: false }]}
-            value={presenter.engine === 'sherpa' ? presenter.voice : presenter.engine}
-            onSelect={(id) => act(() => (id === 'global' ? window.api.setBrandPresenter('global', '') : window.api.setBrandPresenter('sherpa', id)))}
-          />
-        </>
-      )}
 
       <h2>Rights &amp; audit</h2>
       <div className="prod-actions">

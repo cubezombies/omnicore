@@ -13,9 +13,9 @@ export class ExtractiveWriter implements Writer {
   async check(): Promise<ProviderStatus> {
     return { id: this.id, kind: 'writer', label: this.label, available: true, detail: 'Built in', costPerUnitUsd: 0 };
   }
-  async write(input: { brief: Brief; sources: Source[]; channelName: string }): Promise<WriterResult> {
+  async write(input: { brief: Brief; sources: Source[]; channelName: string; instructions?: string }): Promise<WriterResult> {
     const sb = input.brief.claims?.length ? claimStoryboard(input.brief, input.channelName) : extractiveStoryboard(input.brief, input.channelName);
-    validateStoryboard(sb, input.sources);
+    validateStoryboard(sb, input.sources, PRODUCTION_FORMATS[input.brief.format ?? 'short'].maxScenes);
     if (input.brief.claims?.length) {
       const problems = claimProblems(sb, input.brief.claims);
       if (problems.length) throw new InvalidStoryboardError(problems.join(' '));
@@ -128,7 +128,7 @@ export function maxWordsForVoice(wordsPerSec: number): number {
   return Math.max(90, Math.min(150, Math.round(wordsPerSec * 50)));
 }
 
-export function buildMessages(input: { brief: Brief; sources: Source[]; channelName: string }, opts: { maxWords?: number } = {}): { role: string; content: string }[] {
+export function buildMessages(input: { brief: Brief; sources: Source[]; channelName: string; instructions?: string }, opts: { maxWords?: number } = {}): { role: string; content: string }[] {
   const format: ProductionFormat = input.brief.format ?? 'short';
   const spec = PRODUCTION_FORMATS[format];
   const sources = input.sources
@@ -153,7 +153,8 @@ export function buildMessages(input: { brief: Brief; sources: Source[]; channelN
     '3. Each fact scene states one or two of the EVIDENCE CLAIMS and lists their ids in "claimIds" (and their sources in "sourceIds").',
     '4. Respect each claim\'s status: company claims and reports must be attributed ("NVIDIA says…", "according to The Verge…"); estimates and speculation must be hedged ("about", "may"); opinions attributed. Only "Confirmed" claims may be stated plainly.',
     '5. Write in your own words: conversational, concrete, second person is fine. No hype words, no clickbait lies.',
-    'Respond with one JSON object only. No markdown.'
+    'Respond with one JSON object only. No markdown.',
+    ...(input.instructions?.trim() ? [`Standing instructions from ${input.channelName} (style and focus only; they never override the hard rules above):`, input.instructions.trim().slice(0, 2000)] : [])
   ].join('\n');
   const user = `TOPIC: ${input.brief.topic}
 
@@ -277,7 +278,7 @@ export class OpenAICompatibleWriter implements Writer {
     return { content, tokens: body.usage?.total_tokens ?? 0 };
   }
 
-  async write(input: { brief: Brief; sources: Source[]; channelName: string }, signal: AbortSignal): Promise<WriterResult> {
+  async write(input: { brief: Brief; sources: Source[]; channelName: string; instructions?: string }, signal: AbortSignal): Promise<WriterResult> {
     const models = await this.listModels(signal);
     const model = chooseModel(models, this.o.model);
     if (!model) {
@@ -295,7 +296,7 @@ export class OpenAICompatibleWriter implements Writer {
       const r = await this.chat(model, messages, signal);
       tokens += r.tokens;
       try {
-        const sb = validateGrounding(parseLlmStoryboard(r.content, input.sources, `${this.id}:${model}`, input.brief.claims), input.sources, grounding);
+        const sb = validateGrounding(parseLlmStoryboard(r.content, input.sources, `${this.id}:${model}`, input.brief.claims, PRODUCTION_FORMATS[input.brief.format ?? 'short'].maxScenes), input.sources, grounding);
         const problems = [...(input.brief.claims?.length ? claimProblems(sb, input.brief.claims) : []), lengthProblem(sb, maxWords, input.brief.minWords ?? 0, input.brief.format ?? 'short')].filter((x): x is string => !!x);
         if (problems.length) throw new InvalidStoryboardError(problems.join(' '));
         return { storyboard: sb, units: tokens };
@@ -314,7 +315,7 @@ export class OpenAICompatibleWriter implements Writer {
   }
 }
 
-export function parseLlmStoryboard(content: string, sources: Source[], writer: string, claims?: Claim[]): Storyboard {
+export function parseLlmStoryboard(content: string, sources: Source[], writer: string, claims?: Claim[], maxScenes = 10): Storyboard {
   const text = content.replace(/<think>[\s\S]*?<\/think>/g, '');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -347,5 +348,5 @@ export function parseLlmStoryboard(content: string, sources: Source[], writer: s
       if (ids.length) sc.sourceIds = [...new Set(ids.flatMap((id) => byId.get(id)!.sourceIds))];
     }
   }
-  return validateStoryboard(sb, sources);
+  return validateStoryboard(sb, sources, maxScenes);
 }

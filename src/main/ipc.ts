@@ -15,18 +15,20 @@ import type { OperatingEngine } from './autonomy/engine';
 import type { Publisher } from './publishing/publisher';
 import { PLATFORMS } from '../shared/operations';
 import type { OperationsRepository } from './db/operations';
-import type { AutonomySettings } from '../shared/operations';
 
-let autonomyListener: (s: AutonomySettings) => void = () => {};
+let autonomyListener: () => void = () => {};
 /** Main process hook: apply tray/startup/engine changes when autonomy settings are saved. */
-export const onAutonomySettingsChanged = (fn: (s: AutonomySettings) => void) => (autonomyListener = fn);
-const onAutonomyChanged = (s: AutonomySettings) => autonomyListener(s);
+export const onAutonomySettingsChanged = (fn: () => void) => (autonomyListener = fn);
+const onAutonomyChanged = () => autonomyListener();
 import { VOICE_SAMPLE_TEXT, sampleUrl } from '../shared/production';
 import { VoicePreviews, previewNarrator, previewStyle } from './providers/voicePreview';
+import type { BusinessRepository } from './business/businesses';
+import type { TopicRepository } from './business/topics';
+import { BusinessContextError, type BusinessContext, type OwnedKind } from './business/context';
 import * as v from './validation';
 
 type Handler = (...args: unknown[]) => unknown;
-type InvokeKey = Exclude<keyof AppApi, 'onProductionChanged'>;
+type InvokeKey = Exclude<keyof AppApi, 'onProductionChanged' | 'onBusinessChanged'>;
 
 export interface IpcDeps {
   repo: Repository;
@@ -41,55 +43,127 @@ export interface IpcDeps {
   engine: OperatingEngine;
   publisher: Publisher;
   isTrustedSender: (e: IpcMainInvokeEvent) => boolean;
+  businesses: BusinessRepository;
+  topics: TopicRepository;
+  business: BusinessContext;
 }
 
 /**
  * Register every IPC handler. Each one checks the sender is our own top frame
  * and validates its arguments before touching the database or filesystem.
  */
-export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender }: IpcDeps): void {
+export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business }: IpcDeps): void {
   const previews = new VoicePreviews(samplesDir, previewNarrator(() => productions.getSettings(), dirs), () => previewStyle(productions.getSettings()));
-  const brandId = () => repo.listChannels()[0].id;
+  // Every business-owned request is checked against the active business (held here, in the main process) and
+  // against the owner of the record it touches. Missing or invalid context throws; nothing falls back to another business.
+  const cur = () => business.activeId();
+  const own = (kind: OwnedKind, id: unknown) => business.own(kind, v.id(id));
   const handlers: Record<InvokeKey, Handler> = {
-    listChannels: () => repo.listChannels(),
-    listContent: (channelId, stages) => repo.listContent(v.id(channelId, 'channelId'), v.stages(stages)),
-    getContent: (id) => repo.getContent(v.id(id)),
-    createContent: (channelId, draft) => repo.createContent(v.id(channelId, 'channelId'), v.draft(draft)),
-    updateContent: (id, patch) => repo.updateContent(v.id(id), v.patch(patch)),
-    moveContent: (id, to) => repo.moveContent(v.id(id), v.stage(to)),
-    deleteContent: (id) => repo.deleteContent(v.id(id)),
-    stageCounts: (channelId) => repo.stageCounts(v.id(channelId, 'channelId')),
+    // ---- businesses -----------------------------------------------------------------
+    listChannels: () => businesses.list(),
+    listBusinesses: (includeArchived) => businesses.list(v.bool(includeArchived ?? false)),
+    activeBusiness: () => business.tryActive(),
+    switchBusiness: (id) => {
+      const b = business.setActive(id);
+      audit.record({ actor: 'user', businessId: b.id, type: 'business.switched', data: { name: b.name } });
+      return b;
+    },
+    createBusiness: (draft) => {
+      const b = businesses.create(v.businessDraft(draft));
+      audit.record({ actor: 'user', businessId: b.id, type: 'business.created', data: { name: b.name, type: b.businessType, modules: b.modules } });
+      return b;
+    },
+    updateBusiness: (id, patch) => {
+      const bid = business.require(id); // only the selected business can be edited
+      const b = businesses.update(bid, v.businessPatch(patch));
+      audit.record({ actor: 'user', businessId: bid, type: 'business.updated', data: { ...v.businessPatch(patch) } });
+      return b;
+    },
+    archiveBusiness: (id) => {
+      const bid = v.id(id);
+      if (business.tryActive()?.id === bid) throw new BusinessContextError('Switch to another business before archiving this one.');
+      const b = businesses.archive(bid);
+      audit.record({ actor: 'user', businessId: bid, type: 'business.archived', data: { name: b.name } });
+      return b;
+    },
+    restoreBusiness: (id) => {
+      const b = businesses.restore(v.id(id));
+      audit.record({ actor: 'user', businessId: b.id, type: 'business.restored', data: { name: b.name } });
+      return b;
+    },
+
+    // ---- topics (always the active business) ---------------------------------------
+    listTopics: () => topics.list(cur()),
+    createTopic: (draft) => {
+      const t = topics.create(cur(), v.topicDraft(draft));
+      audit.record({ actor: 'user', businessId: t.businessId, type: 'topic.created', subjectType: 'topic', subjectId: t.id, data: { name: t.name, parentId: t.parentId } });
+      return t;
+    },
+    updateTopic: (id, patch) => {
+      const t = topics.update(cur(), v.id(id), v.topicPatch(patch));
+      audit.record({ actor: 'user', businessId: t.businessId, type: 'topic.updated', subjectType: 'topic', subjectId: t.id, data: { ...v.topicPatch(patch) } });
+      return t;
+    },
+    reorderTopics: (parentId, ids) => topics.reorder(cur(), parentId === null ? null : v.id(parentId), v.idList(ids)),
+    archiveTopic: (id) => {
+      const t = topics.archive(cur(), v.id(id));
+      audit.record({ actor: 'user', businessId: t.businessId, type: 'topic.archived', subjectType: 'topic', subjectId: t.id, data: { name: t.name } });
+      return t;
+    },
+    restoreTopic: (id) => topics.restore(cur(), v.id(id)),
+    deleteTopic: (id) => {
+      const bid = cur();
+      const t = topics.get(bid, v.id(id));
+      topics.delete(bid, t.id);
+      audit.record({ actor: 'user', businessId: bid, type: 'topic.deleted', subjectType: 'topic', subjectId: t.id, data: { name: t.name } });
+    },
+    decideTopicProposal: (id, accept) => {
+      const bid = cur();
+      const t = topics.decideProposal(bid, v.id(id), v.bool(accept));
+      audit.record({ actor: 'user', businessId: bid, type: accept ? 'topic.proposal.accepted' : 'topic.proposal.rejected', subjectType: 'topic', subjectId: Number(id) });
+      return t;
+    },
+
+    // ---- content ----------------------------------------------------------------------
+    listContent: (channelId, stages) => repo.listContent(business.require(channelId), v.stages(stages)),
+    getContent: (id) => repo.getContent(own('content', id)),
+    createContent: (channelId, draft) => repo.createContent(business.require(channelId), v.draft(draft)),
+    updateContent: (id, patch) => repo.updateContent(own('content', id), v.patch(patch)),
+    moveContent: (id, to) => repo.moveContent(own('content', id), v.stage(to)),
+    deleteContent: (id) => repo.deleteContent(own('content', id)),
+    stageCounts: (channelId) => repo.stageCounts(business.require(channelId)),
     appInfo: () => info,
 
-    listProductions: (channelId) => productions.list(v.id(channelId, 'channelId')),
-    getProduction: (id) => productions.get(v.id(id)),
+    // ---- productions ------------------------------------------------------------------
+    listProductions: (channelId) => productions.list(business.require(channelId)),
+    getProduction: (id) => productions.get(own('production', id)),
     createProduction: (channelId, input) => {
-      const cid = v.id(channelId, 'channelId');
+      const cid = business.require(channelId);
       const np = v.newProduction(input);
       let notes = '';
       if (np.contentId !== undefined) {
-        const item = repo.getContent(np.contentId);
-        if (!item || item.channelId !== cid) throw new Error('Linked content item not found in this channel.');
-        notes = item.researchNotes;
+        own('content', np.contentId);
+        notes = repo.getContent(np.contentId)!.researchNotes;
       }
-      if (!repo.listChannels().some((c) => c.id === cid)) throw new Error(`Channel ${cid} not found`);
       const p = productions.create(cid, np.topic, np.contentId ?? null, notes, np.mode ?? 'explainer', { destinations: ops.resolveDestinations(cid), format: np.format ?? 'short' });
       audit.record({ actor: 'user', type: 'production.created', productionId: p.id, data: { topic: np.topic, mode: np.mode ?? 'explainer', format: np.format ?? 'short', destinations: p.destinations } });
       runner.enqueue(p.id);
       return productions.get(p.id);
     },
-    retryProduction: (id) => runner.retry(v.id(id)),
-    rerunProduction: (id, from) => runner.rerun(v.id(id), v.stepName(from)),
-    cancelProduction: (id) => runner.cancel(v.id(id)),
-    deleteProduction: (id) => runner.delete(v.id(id)),
+    retryProduction: (id) => runner.retry(own('production', id)),
+    rerunProduction: (id, from) => runner.rerun(own('production', id), v.stepName(from)),
+    cancelProduction: (id) => runner.cancel(own('production', id)),
+    deleteProduction: (id) => runner.delete(own('production', id)),
     showProductionFile: (id) => {
-      const pid = v.id(id);
+      const pid = own('production', id);
       const p = productions.get(pid);
       const target = p.outputPath && fs.existsSync(p.outputPath) ? p.outputPath : runner.dirFor(pid);
       if (!fs.existsSync(target)) throw new Error('Nothing has been produced yet.');
       if (target === p.outputPath) shell.showItemInFolder(path.resolve(target));
       else void shell.openPath(path.resolve(target));
     },
+
+    // ---- shared runtime (models, voices, tools): Omnicore core, not business data ---------
     getSettings: () => productions.getSettings(),
     saveSettings: (s) => productions.saveSettings(v.settings(s)),
     checkProviders: () => checkProviders(productions.getSettings(), dirs),
@@ -119,54 +193,73 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       const p = v.previewVoice(engine, voice);
       return previews.preview(p.engine, p.voice);
     },
-    getAnalytics: () => publisher.analytics(),
-    getAutonomy: () => ops.getAutonomy(),
+
+    // ---- analytics and automation (active business) -----------------------------------
+    getAnalytics: () => publisher.analytics(cur()),
+    getAutonomy: () => ops.getAutonomy(cur()),
     saveAutonomy: (s) => {
-      const saved = ops.saveAutonomy(v.autonomy(s));
-      audit.record({ actor: 'user', type: 'autonomy.settings', data: { ...saved } });
-      onAutonomyChanged(saved);
+      const bid = cur();
+      const saved = ops.saveAutonomy(bid, v.autonomy(s));
+      audit.record({ actor: 'user', businessId: bid, type: 'autonomy.settings', data: { ...saved } });
+      onAutonomyChanged();
       return saved;
     },
-    engineStatus: () => engine.status(),
-    runDiscoveryNow: () => engine.runDiscovery(brandId()),
-    listIdeas: () => ops.listIdeas(brandId()),
+    engineStatus: () => engine.status(cur()),
+    runDiscoveryNow: () => engine.runDiscovery(cur()),
+    listIdeas: () => ops.listIdeas(cur()),
     produceIdea: (id) => {
+      const iid = own('idea', id);
       if (runner.busy()) throw new Error('A production is already running or queued. Try again when it finishes.');
-      return engine.produceIdea(v.id(id), 'user', 'chosen by user');
+      return engine.produceIdea(iid, 'user', 'chosen by user');
     },
     rejectIdea: (id, reason) => {
-      const idea = ops.decideIdea(v.id(id), 'rejected', `rejected by user: ${v.shortText(reason, 'Reason', 300)}`);
-      audit.record({ actor: 'user', type: 'idea.rejected', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, reason } });
+      const idea = ops.decideIdea(own('idea', id), 'rejected', `rejected by user: ${v.shortText(reason, 'Reason', 300)}`);
+      audit.record({ actor: 'user', businessId: idea.brandId, type: 'idea.rejected', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, reason } });
     },
-    listAccounts: () => ops.listAccounts(),
+
+    // ---- accounts & channels (active business) ----------------------------------------
+    listAccounts: () => ops.listAccounts(cur()),
     addAccount: (platform, handle) => {
-      const a = ops.addAccount(v.platform(platform), v.handle(handle));
-      audit.record({ actor: 'user', type: 'account.added', subjectType: 'account', subjectId: a.id, data: { platform: a.platform, handle: a.handle, status: a.status } });
+      const bid = cur();
+      const a = ops.addAccount(bid, v.platform(platform), v.handle(handle));
+      audit.record({ actor: 'user', businessId: bid, type: 'account.added', subjectType: 'account', subjectId: a.id, data: { platform: a.platform, handle: a.handle, status: a.status } });
       return a;
     },
     disconnectAccount: (id) => {
-      const a = ops.disconnectAccount(v.id(id));
-      audit.record({ actor: 'user', type: 'account.disconnected', subjectType: 'account', subjectId: a.id, data: { platform: a.platform, handle: a.handle } });
-      publisher.refreshDestinations(brandId());
+      const a = ops.disconnectAccount(own('account', id));
+      audit.record({ actor: 'user', businessId: a.businessId, type: 'account.disconnected', subjectType: 'account', subjectId: a.id, data: { platform: a.platform, handle: a.handle } });
+      publisher.refreshDestinations(cur());
       return a;
     },
-    listDestinations: () => ops.listDestinations(brandId()),
+    listDestinations: () => ops.listDestinations(cur()),
     setDestination: (platform, accountId, enabled, privacy) => {
-      const d = ops.setDestination(brandId(), v.platform(platform), { accountId: accountId === null ? null : v.id(accountId), enabled: v.bool(enabled), privacy: v.privacy(privacy) });
-      audit.record({ actor: 'user', type: 'destination.set', subjectType: 'destination', subjectId: d.id, data: { ...d } });
-      publisher.refreshDestinations(brandId());
+      const bid = cur();
+      if (accountId !== null) own('account', accountId);
+      const d = ops.setDestination(bid, v.platform(platform), { accountId: accountId === null ? null : v.id(accountId), enabled: v.bool(enabled), privacy: v.privacy(privacy) });
+      audit.record({ actor: 'user', businessId: bid, type: 'destination.set', subjectType: 'destination', subjectId: d.id, data: { ...d } });
+      publisher.refreshDestinations(bid);
       return d;
     },
-    getBrandPresenter: () => ops.brandPresenter(brandId()),
+    getBrandPresenter: () => ops.brandPresenter(cur()),
     setBrandPresenter: (engineId, voice) => {
+      const bid = cur();
       const p = v.presenter(engineId, voice);
-      ops.setBrandPresenter(brandId(), p.engine, p.voice);
-      audit.record({ actor: 'user', type: 'brand.presenter', data: p });
+      ops.setBrandPresenter(bid, p.engine, p.voice);
+      audit.record({ actor: 'user', businessId: bid, type: 'brand.presenter', data: p });
     },
-    qaRuns: (id) => ops.qaRuns(v.id(id)),
-    runQa: (id) => runner.rerun(v.id(id), 'qa'),
+    platformApps: () => PLATFORMS.map((pl) => publisher.appSummary(pl, cur())),
+    savePlatformApp: (platform, app) => publisher.saveApp(cur(), v.platform(platform), v.platformApp(app)),
+    connectAccount: async (id) => {
+      const a = await publisher.connect(own('account', id), AbortSignal.timeout(6 * 60_000));
+      publisher.refreshDestinations(a.businessId!);
+      return a;
+    },
+
+    // ---- review, QA, rights and publishing (production must belong to the active business) ----
+    qaRuns: (id) => ops.qaRuns(own('production', id)),
+    runQa: (id) => runner.rerun(own('production', id), 'qa'),
     approveProduction: (id, note) => {
-      const p = productions.get(v.id(id));
+      const p = productions.get(own('production', id));
       if (p.approval !== 'awaiting_review') throw new Error(p.approval === 'blocked' ? 'This production failed critical QA checks and cannot be approved.' : `Nothing to approve (status: ${p.approval}).`);
       const qa = ops.qaRuns(p.id).at(-1);
       if (qa?.status !== 'passed') throw new Error(`Only videos that passed the quality check can be approved (last result: ${qa?.status ?? 'not run'}). Fix the issues or re-run QA first.`);
@@ -174,12 +267,12 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       audit.record({ actor: 'user', type: 'approval.granted', productionId: p.id, data: { note: v.shortText(note, 'Note', 500), destinations: p.destinations, publishes: false } });
     },
     rejectProduction: (id, note) => {
-      const p = productions.get(v.id(id));
+      const p = productions.get(own('production', id));
       productions.update(p.id, { approval: 'rejected' });
       audit.record({ actor: 'user', type: 'approval.rejected', productionId: p.id, data: { note: v.shortText(note, 'Note', 500) } });
     },
     exportAudit: (id) => {
-      const pid = v.id(id);
+      const pid = own('production', id);
       const r = audit.productionReport(pid);
       const dir = runner.dirFor(pid);
       fs.mkdirSync(dir, { recursive: true });
@@ -189,36 +282,34 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       return path.join(dir, 'audit-report.md');
     },
     verifyAudit: () => audit.verify(),
-    auditEvents: (id) => audit.events({ productionId: v.id(id) }),
-    listIncidents: () => ops.listIncidents(),
+    auditEvents: (id) => audit.events({ productionId: own('production', id) }),
+    listIncidents: () => ops.listIncidents(cur()),
     addIncident: (kind, description, productionId, assetKey) => {
-      const i = ops.addIncident(v.incidentKind(kind), v.shortText(description, 'Description', 2000), productionId === null ? null : v.id(productionId), v.shortText(assetKey ?? '', 'Asset', 500));
-      audit.record({ actor: 'user', type: 'incident.recorded', productionId: i.productionId, subjectType: 'incident', subjectId: i.id, data: { kind: i.kind, assetKey: i.assetKey, description: i.description } });
+      const bid = cur();
+      const pid = productionId === null ? null : own('production', productionId);
+      const i = ops.addIncident(bid, v.incidentKind(kind), v.shortText(description, 'Description', 2000), pid, v.shortText(assetKey ?? '', 'Asset', 500));
+      audit.record({ actor: 'user', businessId: bid, type: 'incident.recorded', productionId: i.productionId, subjectType: 'incident', subjectId: i.id, data: { kind: i.kind, assetKey: i.assetKey, description: i.description } });
       return i;
     },
-    platformApps: () => PLATFORMS.map((pl) => publisher.appSummary(pl)),
-    savePlatformApp: (platform, app) => publisher.saveApp(v.platform(platform), v.platformApp(app)),
-    connectAccount: async (id) => {
-      const a = await publisher.connect(v.id(id), AbortSignal.timeout(6 * 60_000));
-      publisher.refreshDestinations(brandId());
-      return a;
+    resolveIncident: (id) => {
+      ops.resolveIncident(own('incident', id));
+      audit.record({ actor: 'user', businessId: cur(), type: 'incident.resolved', subjectType: 'incident', subjectId: Number(id) });
     },
-    publications: (id) => publisher.publications(v.id(id)),
+    publications: (id) => publisher.publications(own('production', id)),
     publishBlockers: (id) => {
-      const p = productions.get(v.id(id));
+      const p = productions.get(own('production', id));
       return Object.fromEntries(p.destinations.map((d) => [d.platform, publisher.blockers(p.id, d.platform)]));
     },
     publishProduction: (id, platform, tiktok) => {
+      const pid = own('production', id);
       const pl = v.platform(platform);
       // TikTok posts from the UI must come from the posting screen (privacy chosen by the user, no default).
       if (pl === 'tiktok' && tiktok === undefined) throw new Error('Open the TikTok posting screen to choose privacy and settings.');
-      return publisher.publish(v.id(id), pl, 'user', undefined, pl === 'tiktok' ? v.tiktokPost(tiktok) : undefined);
+      return publisher.publish(pid, pl, 'user', undefined, pl === 'tiktok' ? v.tiktokPost(tiktok) : undefined);
     },
-    tiktokCreatorInfo: (id) => publisher.tiktokCreatorInfo(v.id(id)),
-    resolveIncident: (id) => {
-      ops.resolveIncident(v.id(id));
-      audit.record({ actor: 'user', type: 'incident.resolved', subjectType: 'incident', subjectId: Number(id) });
-    },
+    tiktokCreatorInfo: (id) => publisher.tiktokCreatorInfo(own('production', id)),
+
+    // ---- sound library: licensed assets shared by all businesses (core) ------------------
     listSounds: () => library.list(),
     generateSound: (g) => library.generate(v.generatorId(g)),
     importSound: async (kind) => {

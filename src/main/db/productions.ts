@@ -117,6 +117,14 @@ export class ProductionRepository {
     // 0.3 settings had only a Wikipedia toggle.
     if (!saved.researchProviders && saved.wikipediaResearch === false) merged.researchProviders = merged.researchProviders.filter((p) => p !== 'wikipedia');
     merged.wikipediaResearch = merged.researchProviders.includes('wikipedia');
+    // 0.6.1: add the new visual sources once to existing settings (user can remove them afterwards).
+    if (saved.visuals && (saved.visualsRev ?? 0) < 2) {
+      const v = [...saved.visuals];
+      if (!v.includes('openverse')) v.splice(v.includes('wikimedia-commons') ? v.indexOf('wikimedia-commons') + 1 : 0, 0, 'openverse');
+      if (!v.includes('graphics')) v.splice(v.includes('title-card') ? v.indexOf('title-card') : v.length, 0, 'graphics');
+      merged.visuals = v;
+      merged.visualsRev = 2;
+    }
     return merged;
   }
 

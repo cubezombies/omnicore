@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { toBusiness } from '../business/businesses';
 import {
   STAGES,
   canTransition,
@@ -42,14 +43,7 @@ const toItem = (r: ContentRow): ContentItem => ({
   updatedAt: r.updated_at
 });
 
-const toChannel = (r: ChannelRow): Channel => ({
-  id: r.id,
-  name: r.name,
-  slug: r.slug,
-  niche: r.niche,
-  platforms: JSON.parse(r.platforms) as string[],
-  createdAt: r.created_at
-});
+const toChannel = (r: ChannelRow): Channel => toBusiness(r as unknown as Record<string, unknown>);
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 

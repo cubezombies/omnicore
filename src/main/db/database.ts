@@ -309,6 +309,73 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_metric_snapshots ON metric_snapshots(platform, captured_at);
   `,
+  // v9: multi-business. The channels table is the business table; every business-owned record gets an explicit
+  // owner, and everything that existed before belongs to AI, Actually (the only business so far).
+  `
+  ALTER TABLE channels ADD COLUMN business_type TEXT NOT NULL DEFAULT 'media';
+  ALTER TABLE channels ADD COLUMN modules TEXT NOT NULL DEFAULT '["media"]';
+  ALTER TABLE channels ADD COLUMN description TEXT NOT NULL DEFAULT '';
+  ALTER TABLE channels ADD COLUMN objectives TEXT NOT NULL DEFAULT '';
+  ALTER TABLE channels ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
+  ALTER TABLE channels ADD COLUMN accent TEXT NOT NULL DEFAULT '#5eead4';
+  ALTER TABLE channels ADD COLUMN archived_at TEXT;
+  UPDATE channels SET description = 'Short videos explaining AI and technology news, sourced and fact-checked.' WHERE slug = 'ai-actually' AND description = '';
+  UPDATE channels SET objectives = 'Reach $1,000,000 cumulative collected revenue. Replace $150,000 of employment income. Build toward $200,000 annual profit.' WHERE slug = 'ai-actually' AND objectives = '';
+
+  ALTER TABLE platform_accounts ADD COLUMN business_id INTEGER REFERENCES channels(id);
+  UPDATE platform_accounts SET business_id = (SELECT id FROM channels WHERE slug = 'ai-actually') WHERE business_id IS NULL;
+  ALTER TABLE metric_snapshots ADD COLUMN business_id INTEGER REFERENCES channels(id);
+  UPDATE metric_snapshots SET business_id = (SELECT business_id FROM platform_accounts WHERE id = metric_snapshots.account_id);
+  ALTER TABLE engine_runs ADD COLUMN business_id INTEGER REFERENCES channels(id);
+  UPDATE engine_runs SET business_id = CAST(substr(kind, instr(kind, ':') + 1) AS INTEGER) WHERE kind LIKE 'discovery:%';
+  ALTER TABLE incidents ADD COLUMN business_id INTEGER REFERENCES channels(id);
+  UPDATE incidents SET business_id = COALESCE((SELECT channel_id FROM productions WHERE id = incidents.production_id), (SELECT id FROM channels WHERE slug = 'ai-actually'));
+  -- Audit: new events carry their business inside the hash; earlier events stay byte-identical (their chain still
+  -- verifies) and are attributed to the business that owned everything at the time (recorded in settings).
+  ALTER TABLE audit_events ADD COLUMN business_id INTEGER;
+  INSERT INTO settings (key, value) SELECT 'legacyAuditBusiness', CAST(id AS TEXT) FROM channels WHERE slug = 'ai-actually';
+  INSERT INTO settings (key, value) SELECT 'legacyAuditMaxId', CAST(COALESCE(MAX(id), 0) AS TEXT) FROM audit_events;
+
+  -- Per-business settings: automation and developer-app credentials belong to the business.
+  INSERT INTO settings (key, value) SELECT 'business:' || (SELECT id FROM channels WHERE slug = 'ai-actually') || ':' || key, value FROM settings WHERE key = 'autonomy' OR key LIKE 'platformApp:%';
+  DELETE FROM settings WHERE key = 'autonomy' OR key LIKE 'platformApp:%';
+  INSERT INTO settings (key, value) SELECT 'activeBusiness', CAST(id AS TEXT) FROM channels WHERE slug = 'ai-actually';
+
+  CREATE TABLE topics (
+    id                  INTEGER PRIMARY KEY,
+    business_id         INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    parent_id           INTEGER REFERENCES topics(id) ON DELETE CASCADE,
+    name                TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    keywords            TEXT NOT NULL DEFAULT '[]',
+    exclusions          TEXT NOT NULL DEFAULT '[]',
+    priority            INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
+    position            INTEGER NOT NULL DEFAULT 0,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','proposed')),
+    origin              TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','agent','seed')),
+    research_priority   TEXT NOT NULL DEFAULT 'normal' CHECK (research_priority IN ('low','normal','high')),
+    discovery           TEXT NOT NULL DEFAULT '',
+    objectives          TEXT NOT NULL DEFAULT '',
+    autonomous_ok       INTEGER NOT NULL DEFAULT 1,
+    approval_required   INTEGER NOT NULL DEFAULT 0,
+    archived_at         TEXT,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX idx_topics_business ON topics(business_id, parent_id, position);
+  INSERT INTO topics (business_id, name, description, keywords, position, origin)
+  SELECT c.id, t.name, t.description, t.keywords, t.position, 'seed' FROM channels c,
+    (SELECT 'AI models and releases' AS name, 'New and updated models, benchmarks and capabilities.' AS description, '["model","LLM","language model","OpenAI","Anthropic","Google","DeepMind","Meta","release"]' AS keywords, 0 AS position
+     UNION ALL SELECT 'AI hardware', 'Chips, accelerators and data centers that run AI.', '["GPU","chip","NVIDIA","accelerator","data center"]', 1
+     UNION ALL SELECT 'AI research', 'Papers and results from labs and universities.', '["research","paper","arXiv","machine learning"]', 2
+     UNION ALL SELECT 'AI industry news', 'Companies, deals, funding and the business of AI.', '["Microsoft","Apple","funding","acquisition","startup"]', 3
+     UNION ALL SELECT 'AI tools and applications', 'What people can actually do with AI.', '["agent","assistant","app","tool"]', 4
+     UNION ALL SELECT 'Robotics', 'Robots and embodied AI.', '["robot","robotics","humanoid"]', 5
+     UNION ALL SELECT 'Cybersecurity', 'AI in attacks, defence and security research.', '["cybersecurity","security","attack","vulnerability"]', 6
+     UNION ALL SELECT 'AI regulation and policy', 'Laws, regulators and policy debates.', '["regulation","AI Act","policy","law"]', 7) t
+  WHERE c.slug = 'ai-actually';
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

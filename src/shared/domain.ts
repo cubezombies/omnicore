@@ -1,4 +1,5 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
+import type { Business, BusinessDraft, BusinessPatch, Topic, TopicDraft } from './business';
 import type { AnalyticsReport, AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, PlatformAppSummary, Privacy, Publication, QaRun, TikTokCreatorInfo, TikTokPostOptions } from './operations';
 import type {
   AudioKind,
@@ -29,18 +30,8 @@ export const STAGE_LABELS: Record<Stage, string> = {
   published: 'Published'
 };
 
-export interface Channel {
-  id: number;
-  name: string;
-  slug: string;
-  niche: string;
-  platforms: string[];
-  createdAt: string;
-  /** 0.5: the brand's presenter voice (overrides the global narration settings for this brand). */
-  presenterEngine?: string;
-  presenterVoice?: string;
-  editorial?: { keywords?: string[] };
-}
+/** A business operating on Omnicore (stored in the channels table for compatibility). */
+export type Channel = Business;
 
 export interface ContentItem {
   id: number;
@@ -92,11 +83,6 @@ export function canTransition(from: Stage, to: Stage): boolean {
 export const LIMITS = { title: 200, summary: 2000, researchNotes: 50000, script: 50000 } as const;
 
 /** Business goals (static targets for now; revenue tracking comes later). */
-export const BUSINESS_GOALS = {
-  cumulativeRevenueTarget: 1_000_000,
-  incomeToReplace: 150_000,
-  annualProfitTarget: 200_000
-} as const;
 
 export interface AppInfo {
   version: string;
@@ -106,6 +92,24 @@ export interface AppInfo {
 /** The API the preload exposes as window.api. Every call is validated again in main. */
 export interface AppApi {
   listChannels(): Promise<Channel[]>;
+  /** Businesses (active only unless includeArchived). */
+  listBusinesses(includeArchived?: boolean): Promise<Business[]>;
+  /** The business the main process is working in, or null when none is valid. */
+  activeBusiness(): Promise<Business | null>;
+  switchBusiness(id: number): Promise<Business>;
+  createBusiness(draft: BusinessDraft): Promise<Business>;
+  /** Only the active business can be edited. */
+  updateBusiness(id: number, patch: BusinessPatch): Promise<Business>;
+  archiveBusiness(id: number): Promise<Business>;
+  restoreBusiness(id: number): Promise<Business>;
+  listTopics(): Promise<Topic[]>;
+  createTopic(draft: TopicDraft): Promise<Topic>;
+  updateTopic(id: number, patch: Partial<TopicDraft>): Promise<Topic>;
+  reorderTopics(parentId: number | null, orderedIds: number[]): Promise<Topic[]>;
+  archiveTopic(id: number): Promise<Topic>;
+  restoreTopic(id: number): Promise<Topic>;
+  deleteTopic(id: number): Promise<void>;
+  decideTopicProposal(id: number, accept: boolean): Promise<Topic | null>;
   listContent(channelId: number, stages?: Stage[]): Promise<ContentItem[]>;
   getContent(id: number): Promise<ContentItem | null>;
   createContent(channelId: number, draft: ContentDraft): Promise<ContentItem>;
@@ -181,11 +185,28 @@ export interface AppApi {
 
   /** Subscribe to production changes; returns an unsubscribe function. */
   onProductionChanged(cb: (productionId: number) => void): () => void;
+  /** Fired whenever the main process switches the active business (from any source). */
+  onBusinessChanged(cb: (businessId: number) => void): () => void;
 }
 
 /** IPC channel names, shared so preload and main cannot drift. */
 export const IPC = {
   listChannels: 'channels:list',
+  listBusinesses: 'business:list',
+  activeBusiness: 'business:active',
+  switchBusiness: 'business:switch',
+  createBusiness: 'business:create',
+  updateBusiness: 'business:update',
+  archiveBusiness: 'business:archive',
+  restoreBusiness: 'business:restore',
+  listTopics: 'topics:list',
+  createTopic: 'topics:create',
+  updateTopic: 'topics:update',
+  reorderTopics: 'topics:reorder',
+  archiveTopic: 'topics:archive',
+  restoreTopic: 'topics:restore',
+  deleteTopic: 'topics:delete',
+  decideTopicProposal: 'topics:decide',
   listContent: 'content:list',
   getContent: 'content:get',
   createContent: 'content:create',
@@ -246,5 +267,6 @@ export const IPC = {
   publishBlockers: 'publishing:blockers',
   publishProduction: 'publishing:publish',
   tiktokCreatorInfo: 'publishing:tiktok-creator',
-  onProductionChanged: 'productions:changed'
+  onProductionChanged: 'productions:changed',
+  onBusinessChanged: 'business:changed'
 } as const satisfies Record<keyof AppApi, string>;

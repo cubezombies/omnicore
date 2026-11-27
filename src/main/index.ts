@@ -18,6 +18,10 @@ import { Repository } from './db/repository';
 import { resolveFfmpeg } from './media/ffmpeg';
 import { ProductionRunner } from './pipeline/runner';
 import { buildProviders } from './providers/registry';
+import { electronRasterize } from './media/rasterize';
+import { BusinessRepository } from './business/businesses';
+import { TopicRepository } from './business/topics';
+import { BusinessContext } from './business/context';
 import { onAutonomySettingsChanged, registerIpc } from './ipc';
 import { SoundLibrary } from './library';
 import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath, resolveSamplePath } from './paths';
@@ -260,12 +264,15 @@ if (!app.requestSingleInstanceLock()) {
     const productions = new ProductionRepository(db);
     const productionsDir = path.join(dataDir, 'productions');
     const tmpDir = path.join(dataDir, 'tmp');
-    const dirs = { tmpDir, toolsDir: path.join(dataDir, 'tools') };
+    const dirs = { tmpDir, toolsDir: path.join(dataDir, 'tools'), rasterize: electronRasterize };
     const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath));
     fs.mkdirSync(productionsDir, { recursive: true });
     productions.markInterrupted();
     productions.restoreOutputs(productionsDir);
     const ops = new OperationsRepository(db);
+    const businesses = new BusinessRepository(db);
+    const topics = new TopicRepository(db);
+    const business = new BusinessContext(db, businesses);
     const audit = new AuditLedger(db, path.join(dataDir, 'evidence'));
     const runner = new ProductionRunner({
       ops,
@@ -278,8 +285,9 @@ if (!app.requestSingleInstanceLock()) {
       library,
       ffmpeg: (s) => resolveFfmpeg(s.ffmpegPath),
       channel: (id) => {
-        const c = repo.listChannels().find((x) => x.id === id);
-        return { name: c?.name ?? 'this channel', niche: c?.niche ?? '' };
+        // Each production is written with its own business's identity and agent instructions, never another's.
+        const c = businesses.get(id);
+        return { name: c.name, niche: c.niche, instructions: c.instructions };
       },
       emit: (id) => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.onProductionChanged, id);
@@ -315,13 +323,19 @@ if (!app.requestSingleInstanceLock()) {
       productions,
       runner,
       audit,
+      topics,
       discover: (_brandId, keywords, recent, signal) => discover(defaultDiscoverySources(), keywords, recent, signal),
       onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
     });
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender });
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business });
     registerMediaProtocol(productionsDir, library.dir, samplesDir);
+    // Keep every window on the real active business, whoever switched it.
+    business.onChange((b) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send(IPC.onBusinessChanged, b.id)));
 
-    const applyAutonomy = (a: AutonomySettings) => {
+    // Automation is configured per business; the engine runs while any active business has it enabled.
+    const applyAutonomy = () => {
+      const all = ops.brandIds().map((b) => ops.getAutonomy(b));
+      const a: AutonomySettings = { ...(all[0] ?? ops.getAutonomy(0)), enabled: all.some((x) => x.enabled), keepRunningInTray: all.some((x) => x.keepRunningInTray), runAtStartup: all.some((x) => x.runAtStartup) };
       keepInTray = a.keepRunningInTray && (a.enabled || BACKGROUND);
       if (a.enabled) engine.start();
       else void engine.stop('disabled by user');
@@ -346,7 +360,7 @@ if (!app.requestSingleInstanceLock()) {
       }
     };
     onAutonomySettingsChanged(applyAutonomy);
-    applyAutonomy(ops.getAutonomy());
+    applyAutonomy();
 
     // Graceful shutdown: stop the engine, let an autonomous production record its interruption, then close the DB.
     let closing = false;

@@ -1,3 +1,4 @@
+import type { TopicRepository } from '../business/topics';
 import type { AuditLedger } from '../audit/ledger';
 import type { Publisher } from '../publishing/publisher';
 import type { OperationsRepository } from '../db/operations';
@@ -17,6 +18,8 @@ export interface EngineDeps {
   onChange?: () => void;
   /** Publishing (optional so tests can run the loop without it). */
   publisher?: Pick<Publisher, 'verifyPending' | 'hasUserApprovedPublicPost' | 'blockers' | 'publish'>;
+  /** Business topics steer discovery (optional so older tests can omit it). */
+  topics?: Pick<TopicRepository, 'discoveryProfile'>;
 }
 
 /** What the operating engine cannot do on its own — shown in the UI so nobody assumes 24/7 operation. */
@@ -35,6 +38,11 @@ const RETRY_AFTER_MS = 10 * 60_000;
  * discovers opportunities on a schedule, selects the best idea within limits and operating
  * hours, produces it with its brand destinations, retries failures and recovers after restarts.
  */
+const mentionsAny = (text: string, terms: string[]): boolean => {
+  const t = text.toLowerCase();
+  return terms.some((x) => x.trim() && new RegExp(`\\b${x.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t));
+};
+
 export class OperatingEngine {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
@@ -53,7 +61,7 @@ export class OperatingEngine {
     this.stopped = false;
     const interrupted = this.d.ops.markRunsInterrupted();
     if (interrupted) this.d.audit.record({ actor: 'engine', type: 'engine.recovered', data: { interruptedRuns: interrupted } });
-    this.d.audit.record({ actor: 'engine', type: 'engine.started', data: { autonomy: this.d.ops.getAutonomy() } });
+    this.d.audit.record({ actor: 'engine', type: 'engine.started', data: { businesses: this.d.ops.brandIds().map((b) => ({ businessId: b, autonomy: this.d.ops.getAutonomy(b) })) } });
     this.timer = setInterval(() => void this.tick(), this.d.tickMs ?? 60_000);
     setTimeout(() => void this.tick(), 2_000);
   }
@@ -79,9 +87,10 @@ export class OperatingEngine {
     if (this.ticking || (this.stopped && !force)) return;
     this.ticking = true;
     try {
-      const s = this.d.ops.getAutonomy();
-      if (!s.enabled && !force) return;
+      // Each business runs with its own automation settings; archived businesses are skipped entirely.
       for (const brandId of this.d.ops.brandIds()) {
+        const s = this.d.ops.getAutonomy(brandId);
+        if (!s.enabled && !force) continue;
         const last = this.d.ops.lastRun(`discovery:${brandId}`);
         const due = !last || this.now().getTime() - Date.parse(`${last.startedAt}Z`.replace('ZZ', 'Z')) >= s.discoveryEveryHours * 3600_000;
         if (due) await this.runDiscovery(brandId);
@@ -100,25 +109,28 @@ export class OperatingEngine {
   }
 
   async runDiscovery(brandId: number): Promise<{ created: number; candidates: number }> {
-    const s = this.d.ops.getAutonomy();
-    const runId = this.d.ops.startRun(`discovery:${brandId}`);
+    const s = this.d.ops.getAutonomy(brandId);
+    const runId = this.d.ops.startRun(`discovery:${brandId}`, brandId);
     this.discovering = new AbortController();
     try {
-      const keywords = this.d.ops.brandKeywords(brandId);
+      // The business's own enabled topics steer discovery; exclusions drop stories outright.
+      const profile = this.d.topics?.discoveryProfile(brandId);
+      const keywords = profile?.keywords.length ? profile.keywords : this.d.ops.brandKeywords(brandId);
       const recent = this.d.ops.recentTopics(brandId, 21);
       const res = await this.d.discover(brandId, keywords, recent, this.discovering.signal);
       let created = 0;
       for (const c of res.candidates) {
+        if (profile && mentionsAny(`${c.topic} ${c.headline}`, profile.exclusions)) continue;
         const { idea, created: isNew } = this.d.ops.upsertIdea({ brandId, topic: c.topic, headline: c.headline, mode: c.mode, signals: c.signals, score: c.score, scoreDetail: c.scoreDetail, fingerprint: c.fingerprint });
         if (isNew) {
           created++;
-          this.d.audit.record({ actor: 'engine', type: 'idea.discovered', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, score: idea.score, detail: idea.scoreDetail, signals: idea.signals.map((x) => ({ url: x.url, publisher: x.publisher, kind: x.kind })) } });
+          this.d.audit.record({ actor: 'engine', businessId: brandId, type: 'idea.discovered', subjectType: 'idea', subjectId: idea.id, data: { topic: idea.topic, score: idea.score, detail: idea.scoreDetail, signals: idea.signals.map((x) => ({ url: x.url, publisher: x.publisher, kind: x.kind })) } });
         }
       }
       const pruned = this.d.ops.pruneIdeas(brandId, s.maxIdeasKept, 7);
       const detail = `${res.items} items · ${res.candidates.length} stories · ${created} new ideas · ${pruned} expired · sources: ${res.sourceReports.map((r) => `${r.id} ${r.ok ? r.items : `failed (${r.error})`}`).join(', ')}`;
       this.d.ops.finishRun(runId, 'done', detail);
-      this.d.audit.record({ actor: 'engine', type: 'discovery.run', data: { brandId, items: res.items, stories: res.candidates.length, created, pruned, sources: res.sourceReports } });
+      this.d.audit.record({ actor: 'engine', businessId: brandId, type: 'discovery.run', data: { brandId, items: res.items, stories: res.candidates.length, created, pruned, sources: res.sourceReports } });
       return { created, candidates: res.candidates.length };
     } catch (e) {
       this.d.ops.finishRun(runId, this.discovering.signal.aborted ? 'interrupted' : 'failed', e instanceof Error ? e.message : String(e));
@@ -128,23 +140,25 @@ export class OperatingEngine {
     }
   }
 
-  private withinHours(): boolean {
-    const s = this.d.ops.getAutonomy();
+  private withinHours(brandId: number): boolean {
+    const s = this.d.ops.getAutonomy(brandId);
     const h = this.now().getHours();
     return s.activeFromHour <= s.activeToHour ? h >= s.activeFromHour && h < s.activeToHour : h >= s.activeFromHour || h < s.activeToHour;
   }
 
-  productionsToday(): number {
+  productionsToday(brandId: number): number {
     const d = this.now();
     const start = new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
-    return this.d.ops.autonomousProductionsSince(start);
+    return this.d.ops.autonomousProductionsSince(start, brandId);
   }
 
   /** Editorial selection: start the best-scoring new idea if limits, hours and the queue allow. */
   maybeStartProduction(brandId: number): number | null {
-    const s = this.d.ops.getAutonomy();
-    if (!this.withinHours() || this.d.runner.busy() || this.productionsToday() >= s.maxProductionsPerDay) return null;
-    const best = this.d.ops.listIdeas(brandId, 'new')[0];
+    const s = this.d.ops.getAutonomy(brandId);
+    if (!this.withinHours(brandId) || this.d.runner.busy() || this.productionsToday(brandId) >= s.maxProductionsPerDay) return null;
+    // Ideas under topics that require approval are left for the user ("Produce now"); the engine never starts them.
+    const needsApproval = this.d.topics?.discoveryProfile(brandId).approvalKeywords ?? [];
+    const best = this.d.ops.listIdeas(brandId, 'new').find((i) => !mentionsAny(`${i.topic} ${i.headline}`, needsApproval));
     if (!best || best.score < s.minIdeaScore) return null;
     return this.produceIdea(best.id, 'engine', `highest-scoring idea (${best.score} ≥ ${s.minIdeaScore})`);
   }
@@ -155,8 +169,8 @@ export class OperatingEngine {
     const destinations = this.d.ops.resolveDestinations(idea.brandId);
     const p = this.d.productions.create(idea.brandId, idea.topic, null, '', idea.mode, { origin: 'autonomous', ideaId: idea.id, destinations });
     this.d.ops.decideIdea(idea.id, 'selected', reason, p.id);
-    this.d.audit.record({ actor, type: 'idea.selected', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { topic: idea.topic, score: idea.score, reason } });
-    this.d.audit.record({ actor, type: 'production.destination', productionId: p.id, data: { destinations } });
+    this.d.audit.record({ actor, businessId: idea.brandId, type: 'idea.selected', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { topic: idea.topic, score: idea.score, reason } });
+    this.d.audit.record({ actor, businessId: idea.brandId, type: 'production.destination', productionId: p.id, data: { destinations } });
     this.d.runner.enqueue(p.id);
     return p.id;
   }
@@ -192,14 +206,14 @@ export class OperatingEngine {
     const pub = this.d.publisher;
     if (!pub) return;
     await pub.verifyPending();
-    if (!this.d.ops.getAutonomy().autoPublish || !pub.hasUserApprovedPublicPost()) return;
+    if (!this.d.ops.getAutonomy(brandId).autoPublish || !pub.hasUserApprovedPublicPost(brandId)) return;
     for (const p of this.d.productions.list(brandId).filter((x) => x.origin === 'autonomous' && x.status === 'completed' && x.approval === 'awaiting_review')) {
       if (this.d.ops.qaRuns(p.id).at(-1)?.status !== 'passed') continue;
       // Approval is the only blocker auto-publish may lift; skip if anything else (e.g. a disconnected account) blocks every destination.
       const ready = p.destinations.filter((d) => pub.blockers(p.id, d.platform).every((b) => b === 'Not approved for publication.'));
       if (!ready.length) continue;
       this.d.productions.update(p.id, { approval: 'approved' });
-      this.d.audit.record({ actor: 'engine', type: 'approval.granted', productionId: p.id, data: { reason: 'auto-publish: QA passed and a user-approved public post exists', publishes: true } });
+      this.d.audit.record({ actor: 'engine', businessId: brandId, type: 'approval.granted', productionId: p.id, data: { reason: 'auto-publish: QA passed and a user-approved public post exists', publishes: true } });
       for (const d of this.d.productions.get(p.id).destinations) {
         if (pub.blockers(p.id, d.platform).length) continue;
         try {
@@ -211,17 +225,18 @@ export class OperatingEngine {
     }
   }
 
-  status(): EngineStatus {
-    const s = this.d.ops.getAutonomy();
-    const last = this.d.ops.brandIds().map((b) => this.d.ops.lastRun(`discovery:${b}`)).find(Boolean) ?? null;
+  /** Status of one business's automation (never mixes businesses). */
+  status(brandId: number): EngineStatus {
+    const s = this.d.ops.getAutonomy(brandId);
+    const last = this.d.ops.lastRun(`discovery:${brandId}`);
     const lastAt = last ? new Date(Date.parse(`${last.startedAt}Z`.replace('ZZ', 'Z'))).toISOString() : null;
-    const active = this.d.ops.brandIds().flatMap((b) => this.d.productions.list(b)).find((p) => p.status === 'running' || p.status === 'queued');
+    const active = this.d.productions.list(brandId).find((p) => p.status === 'running' || p.status === 'queued');
     return {
       enabled: s.enabled,
       running: this.isRunning(),
       lastDiscoveryAt: lastAt,
       nextDiscoveryAt: lastAt ? new Date(Date.parse(lastAt) + s.discoveryEveryHours * 3600_000).toISOString() : null,
-      productionsToday: this.productionsToday(),
+      productionsToday: this.productionsToday(brandId),
       activeProductionId: active?.id ?? null,
       lastError: this.lastError,
       limitations: ENGINE_LIMITATIONS
