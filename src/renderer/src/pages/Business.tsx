@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BUSINESS_GOALS, type AppInfo } from '../../../shared/domain';
 import type { PageProps } from '../App';
+import { AnalyticsPanel } from '../components/AnalyticsPanel';
 
 const usd = (n: number) => n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 
@@ -41,6 +42,7 @@ export function Business({ channel }: PageProps) {
           );
         })}
       </div>
+      <AnalyticsPanel />
       <h2>Channel</h2>
       <dl className="facts">
         <dt>Name</dt>

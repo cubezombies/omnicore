@@ -1,4 +1,4 @@
-import type { Brief, Claim, ClaimKind, ProductionMode, Source } from '../../shared/production';
+import { PRODUCTION_FORMATS, type Brief, type Claim, type ClaimKind, type ProductionFormat, type ProductionMode, type Source } from '../../shared/production';
 import { InsufficientResearchError, significantTokens, splitSentences, titleCase, wordCount } from '../providers/text';
 
 /** A claim must read as an ordinary English sentence: not a heading, title, badge line or code fragment. */
@@ -139,8 +139,8 @@ export function buildClaims(topic: string, sources: Source[], mode: ProductionMo
 }
 
 /** @param maxWords total script words the narrator can say in under a minute (claims get that minus hook/outro). */
-export function buildEvidenceBrief(topic: string, sources: Source[], channelNiche: string, mode: ProductionMode, maxWords = 140): Brief {
-  const claims = buildClaims(topic, sources, mode, 6, Math.max(45, maxWords - 25));
+export function buildEvidenceBrief(topic: string, sources: Source[], channelNiche: string, mode: ProductionMode, maxWords = 140, format: ProductionFormat = 'short', minWords = 0): Brief {
+  const claims = buildClaims(topic, sources, mode, PRODUCTION_FORMATS[format].maxClaims, Math.max(45, maxWords - 25));
   const words = claims.reduce((s, c) => s + wordCount(c.text), 0) + 20;
   return {
     topic,
@@ -150,6 +150,9 @@ export function buildEvidenceBrief(topic: string, sources: Source[], channelNich
     keyFacts: claims.map((c) => ({ text: c.text, sourceId: c.sourceIds[0] })),
     claims,
     mode,
+    format,
+    minWords,
+    maxWords,
     targetSeconds: Math.round(words / 2.5)
   };
 }

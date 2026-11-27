@@ -289,6 +289,26 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_publications_prod ON publications(production_id, platform);
   `,
+  // v7: length format (short < 60 s, standard 65–120 s). Existing productions are shorts.
+  `
+  ALTER TABLE productions ADD COLUMN format TEXT NOT NULL DEFAULT 'short' CHECK (format IN ('short','standard'));
+  `,
+  // v8: audience snapshots (one row per account or publication per refresh), for trends over time.
+  `
+  CREATE TABLE metric_snapshots (
+    id              INTEGER PRIMARY KEY,
+    captured_at     TEXT NOT NULL,
+    platform        TEXT NOT NULL CHECK (platform IN ('tiktok','youtube','instagram')),
+    account_id      INTEGER REFERENCES platform_accounts(id) ON DELETE SET NULL,
+    publication_id  INTEGER REFERENCES publications(id) ON DELETE CASCADE,
+    followers       INTEGER,
+    views           INTEGER,
+    likes           INTEGER,
+    comments        INTEGER,
+    extra           TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX idx_metric_snapshots ON metric_snapshots(platform, captured_at);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { STEP_LABELS, type Production, type ProductionMode, type ProductionSummary } from '../../../shared/production';
+import { PRODUCTION_FORMATS, STEP_LABELS, type Production, type ProductionFormat, type ProductionMode, type ProductionSummary } from '../../../shared/production';
 import type { PageProps } from '../App';
 import { ContentList, useContent } from '../components/ContentList';
 import { ProductionDetail, StatusBadge, errorText, usd } from '../components/ProductionDetail';
@@ -17,6 +17,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
   const [detail, setDetail] = useState<Production | null>(null);
   const [topic, setTopic] = useState('');
   const [mode, setMode] = useState<ProductionMode>('explainer');
+  const [format, setFormat] = useState<ProductionFormat>('short');
   const [error, setError] = useState<string | null>(null);
   const [showProviders, setShowProviders] = useState(false);
   const { items } = useContent(channel.id, ['script', 'production', 'review'], refreshKey);
@@ -54,7 +55,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
     e.preventDefault();
     setError(null);
     try {
-      const p = await window.api.createProduction(channel.id, { topic, mode });
+      const p = await window.api.createProduction(channel.id, { topic, mode, format });
       setTopic('');
       setSelected(p.id);
       loadList();
@@ -87,6 +88,14 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
           <select value={mode} onChange={(e) => setMode(e.target.value as ProductionMode)}>
             <option value="explainer">Explainer (background + research)</option>
             <option value="news">News (recent coverage)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Length</span>
+          <select value={format} onChange={(e) => setFormat(e.target.value as ProductionFormat)}>
+            {(Object.keys(PRODUCTION_FORMATS) as ProductionFormat[]).map((f) => (
+              <option key={f} value={f}>{PRODUCTION_FORMATS[f].label}</option>
+            ))}
           </select>
         </label>
         <button className="primary" type="submit" disabled={!topic.trim()}>

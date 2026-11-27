@@ -1,11 +1,13 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
-import type { AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, PlatformAppSummary, Privacy, Publication, QaRun, TikTokCreatorInfo, TikTokPostOptions } from './operations';
+import type { AnalyticsReport, AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, PlatformAppSummary, Privacy, Publication, QaRun, TikTokCreatorInfo, TikTokPostOptions } from './operations';
 import type {
   AudioKind,
   AudioTrack,
   AudioTrackPatch,
   PiperVoiceId,
   VoiceSample,
+  PreviewEngine,
+  VoicePreview,
   SoundGeneratorId,
   NewProduction,
   Production,
@@ -131,6 +133,10 @@ export interface AppApi {
   installKokoro(): Promise<ProviderSettings>;
   /** Synthesise a short technical sample with the current narration settings and measure its speaking speed. */
   generateVoiceSample(): Promise<VoiceSample>;
+  /** Synthesise (or reuse) a short preview of one voice. Never changes settings. */
+  previewVoice(engine: PreviewEngine, voice: string): Promise<VoicePreview>;
+  /** Refresh audience numbers from connected accounts (read-only) and compute monetization progress. */
+  getAnalytics(): Promise<AnalyticsReport>;
 
   // Music & Sound Library
   listSounds(): Promise<AudioTrack[]>;
@@ -202,6 +208,8 @@ export const IPC = {
   installPiper: 'providers:installPiper',
   installKokoro: 'providers:installKokoro',
   generateVoiceSample: 'providers:voiceSample',
+  previewVoice: 'providers:voicePreview',
+  getAnalytics: 'analytics:get',
   listSounds: 'sounds:list',
   generateSound: 'sounds:generate',
   importSound: 'sounds:import',

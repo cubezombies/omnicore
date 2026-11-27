@@ -18,7 +18,7 @@ Omnicore publishes only through each platform's official API, which means each p
 ## YouTube Shorts
 
 1. Go to https://console.cloud.google.com and create a project (free).
-2. **APIs & Services → Library → YouTube Data API v3 → Enable.**
+2. **APIs & Services → Library → YouTube Data API v3 → Enable**, then do the same for **YouTube Analytics API** (watch time and Shorts views for the monetization tracker).
 3. Set up the **OAuth consent screen**: External, in "Testing", with the AI, Actually Google account added as a test user.
 4. **Credentials → Create credentials → OAuth client ID → Desktop app.** Copy the client ID and secret into Omnicore.
 5. Register the channel handle in Accounts, then **Connect**, then assign it to the YouTube destination and enable it.

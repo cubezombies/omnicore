@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { QaCategory, QaFinding, Severity } from '../../shared/operations';
-import type { Production } from '../../shared/production';
+import { PRODUCTION_FORMATS, type Production } from '../../shared/production';
 import { verifyVisualAssets } from '../media/assetPolicy';
 import { buildCues, type WordTiming } from '../media/captions';
 import { probe } from '../media/ffmpeg';
@@ -181,7 +181,8 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
     const info = await probe(ctx.ffmpeg, file);
     const specOk = info.video?.codec === 'h264' && info.video.width === 1080 && info.video.height === 1920 && info.audio?.codec === 'aac';
     out.push(finding('video.spec', 'video', 'critical', !!specOk, `${info.video?.codec ?? 'no video'} ${info.video?.width}×${info.video?.height}, audio ${info.audio?.codec ?? 'none'} ${info.audio?.sampleRate ?? ''} Hz.`, { ...info }, 'rerender'));
-    out.push(finding('video.duration', 'video', 'major', info.durationSec >= 10 && info.durationSec <= 60, `Duration ${info.durationSec.toFixed(1)} s (target 10–60 s for Shorts/Reels/TikTok).`, { durationSec: info.durationSec }, info.durationSec > 60 ? 'shorten' : undefined));
+    const fmt = PRODUCTION_FORMATS[ctx.production.format ?? 'short'];
+    out.push(finding('video.duration', 'video', 'major', info.durationSec >= fmt.minSec && info.durationSec <= fmt.maxSec, `Duration ${info.durationSec.toFixed(1)} s (target ${fmt.minSec}–${fmt.maxSec} s for ${fmt.label}).`, { durationSec: info.durationSec, format: ctx.production.format ?? 'short' }, info.durationSec > fmt.maxSec ? 'shorten' : undefined));
     const decodeErr = (await runFfmpegCapture(ctx.ffmpeg, ['-v', 'error', '-i', file, '-f', 'null', '-'], ctx.signal)).trim();
     out.push(finding('video.integrity', 'video', 'critical', decodeErr === '', decodeErr ? `Decoding errors: ${decodeErr.slice(0, 300)}` : 'Full decode completed without errors.', {}, 'rerender'));
     out.push(finding('video.faststart', 'video', 'minor', isFastStart(file), isFastStart(file) ? 'Streamable (moov before mdat).' : 'Not streamable (moov after mdat).', {}, 'rerender'));

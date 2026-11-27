@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { monetizationPrograms, type PlatformStats } from './analytics';
+import type { AnalyticsReport, PlatformAnalytics, VideoStats } from '../../shared/operations';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AuditLedger } from '../audit/ledger';
 import type { OperationsRepository } from '../db/operations';
@@ -118,6 +120,47 @@ export class Publisher {
     if (!this.d.box.available()) throw new OAuthError('Windows secure storage is unavailable, so the sign-in cannot be stored safely.');
     this.d.ops.storeToken(accountId, this.d.box.encrypt(JSON.stringify(t)));
   }
+  /**
+   * Pull audience numbers from every connected account (read-only), store a snapshot, and work out
+   * monetization progress. Platforms that can't report stats say why instead of showing zeros.
+   */
+  async analytics(): Promise<AnalyticsReport> {
+    const capturedAt = new Date().toISOString();
+    const accounts = this.d.ops.listAccounts().filter((a) => a.status === 'connected');
+    const pubs = (this.d.db.prepare(`SELECT * FROM publications WHERE status = 'published' AND remote_id != '' ORDER BY id`).all() as Record<string, unknown>[]).map(toPub);
+    const platforms: PlatformAnalytics[] = [];
+    const raw: Partial<Record<Platform, PlatformStats>> = {};
+    const ins = this.d.db.prepare('INSERT INTO metric_snapshots (captured_at, platform, account_id, publication_id, followers, views, likes, comments, extra) VALUES (?,?,?,?,?,?,?,?,?)');
+    for (const a of accounts) {
+      const mine = pubs.filter((p) => p.accountId === a.id);
+      const videos = (s?: PlatformStats): VideoStats[] =>
+        mine.map((p) => {
+          const pr = this.d.productions.get(p.productionId);
+          const v = s?.videos[p.remoteId];
+          return { publicationId: p.id, productionId: p.productionId, title: pr.storyboard?.title ?? pr.topic, url: p.url, privacy: p.privacyApplied, views: v?.views ?? null, likes: v?.likes ?? null, comments: v?.comments ?? null };
+        });
+      const client = this.d.clients[a.platform];
+      if (!client.stats) {
+        const why = a.platform === 'tiktok' ? 'TikTok view and follower counts need the video.list and user.info.stats permissions. Add them after the current app review finishes.' : 'Stats for this platform are not available yet.';
+        platforms.push({ platform: a.platform, handle: a.handle, available: false, detail: why, followers: null, totalViews: null, videos: videos() });
+        continue;
+      }
+      try {
+        const s = await client.stats(await this.tokensFor(a.id), [...new Set(mine.map((p) => p.remoteId))]);
+        raw[a.platform] = s;
+        ins.run(capturedAt, a.platform, a.id, null, s.followers, s.totalViews, null, null, JSON.stringify({ longformWatchHours12m: s.longformWatchHours12m ?? null, shortsViews90d: s.shortsViews90d ?? null, views30d: s.views30d ?? null }));
+        const vs = videos(s);
+        for (const v of vs) if (v.views !== null) ins.run(capturedAt, a.platform, a.id, v.publicationId, null, v.views, v.likes, v.comments, '{}');
+        platforms.push({ platform: a.platform, handle: a.handle, available: true, detail: s.detail ?? '', followers: s.followers, totalViews: s.totalViews, videos: vs });
+      } catch (e) {
+        platforms.push({ platform: a.platform, handle: a.handle, available: false, detail: e instanceof Error ? e.message : String(e), followers: null, totalViews: null, videos: videos() });
+      }
+    }
+    const since = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const ytPublic90 = pubs.filter((p) => p.platform === 'youtube' && p.privacyApplied === 'public' && p.createdAt >= since).length;
+    return { capturedAt, platforms, programs: monetizationPrograms({ youtube: raw.youtube, tiktok: raw.tiktok, youtubePublicUploads90d: ytPublic90 }) };
+  }
+
   private async tokensFor(accountId: number): Promise<TokenSet> {
     const acct = this.d.ops.getAccount(accountId);
     const raw = this.d.ops.readToken(accountId);

@@ -22,6 +22,7 @@ let autonomyListener: (s: AutonomySettings) => void = () => {};
 export const onAutonomySettingsChanged = (fn: (s: AutonomySettings) => void) => (autonomyListener = fn);
 const onAutonomyChanged = (s: AutonomySettings) => autonomyListener(s);
 import { VOICE_SAMPLE_TEXT, sampleUrl } from '../shared/production';
+import { VoicePreviews, previewNarrator, previewStyle } from './providers/voicePreview';
 import * as v from './validation';
 
 type Handler = (...args: unknown[]) => unknown;
@@ -47,6 +48,7 @@ export interface IpcDeps {
  * and validates its arguments before touching the database or filesystem.
  */
 export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender }: IpcDeps): void {
+  const previews = new VoicePreviews(samplesDir, previewNarrator(() => productions.getSettings(), dirs), () => previewStyle(productions.getSettings()));
   const brandId = () => repo.listChannels()[0].id;
   const handlers: Record<InvokeKey, Handler> = {
     listChannels: () => repo.listChannels(),
@@ -71,8 +73,8 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
         notes = item.researchNotes;
       }
       if (!repo.listChannels().some((c) => c.id === cid)) throw new Error(`Channel ${cid} not found`);
-      const p = productions.create(cid, np.topic, np.contentId ?? null, notes, np.mode ?? 'explainer', { destinations: ops.resolveDestinations(cid) });
-      audit.record({ actor: 'user', type: 'production.created', productionId: p.id, data: { topic: np.topic, mode: np.mode ?? 'explainer', destinations: p.destinations } });
+      const p = productions.create(cid, np.topic, np.contentId ?? null, notes, np.mode ?? 'explainer', { destinations: ops.resolveDestinations(cid), format: np.format ?? 'short' });
+      audit.record({ actor: 'user', type: 'production.created', productionId: p.id, data: { topic: np.topic, mode: np.mode ?? 'explainer', format: np.format ?? 'short', destinations: p.destinations } });
       runner.enqueue(p.id);
       return productions.get(p.id);
     },
@@ -105,7 +107,7 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       const n = narrator(s, dirs);
       fs.mkdirSync(samplesDir, { recursive: true });
       // Keep the folder small: remove all but the 8 newest samples.
-      const old = fs.readdirSync(samplesDir).filter((f) => f.endsWith('.wav')).map((f) => ({ f, t: fs.statSync(path.join(samplesDir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+      const old = fs.readdirSync(samplesDir).filter((f) => f.startsWith('sample-') && f.endsWith('.wav')).map((f) => ({ f, t: fs.statSync(path.join(samplesDir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
       for (const o of old.slice(8)) fs.rmSync(path.join(samplesDir, o.f), { force: true });
       const file = `sample-${n.id}-${Date.now()}.wav`;
       const r = await n.synthesize(VOICE_SAMPLE_TEXT, path.join(samplesDir, file), AbortSignal.timeout(180_000));
@@ -113,6 +115,11 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       productions.saveSettings({ ...productions.getSettings(), voiceWordsPerSec: Math.round(wordsPerSec * 100) / 100 });
       return { url: sampleUrl(file), durationSec: r.durationSec, wordsPerSec, voice: r.voice, engine: n.label };
     },
+    previewVoice: (engine, voice) => {
+      const p = v.previewVoice(engine, voice);
+      return previews.preview(p.engine, p.voice);
+    },
+    getAnalytics: () => publisher.analytics(),
     getAutonomy: () => ops.getAutonomy(),
     saveAutonomy: (s) => {
       const saved = ops.saveAutonomy(v.autonomy(s));

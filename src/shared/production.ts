@@ -85,6 +85,14 @@ export interface Claim {
 
 export type ProductionMode = 'explainer' | 'news';
 
+/** Length formats. Standard (65–120 s) qualifies for programmes that require videos over one minute (e.g. TikTok Creator Rewards). */
+export type ProductionFormat = 'short' | 'standard';
+export const PRODUCTION_FORMATS: Record<ProductionFormat, { label: string; minSec: number; maxSec: number; minClaims: number; maxClaims: number; minSources: number; factScenes: [number, number] }> = {
+  short: { label: 'Short (under 60 s)', minSec: 10, maxSec: 60, minClaims: 1, maxClaims: 6, minSources: 1, factScenes: [3, 5] },
+  standard: { label: 'Standard (65–120 s)', minSec: 65, maxSec: 120, minClaims: 5, maxClaims: 10, minSources: 3, factScenes: [5, 8] }
+};
+export const isProductionFormat = (v: unknown): v is ProductionFormat => v === 'short' || v === 'standard';
+
 export interface KeyFact {
   text: string;
   sourceId: string;
@@ -100,6 +108,10 @@ export interface Brief {
   /** Claim-level evidence (0.4+). */
   claims?: Claim[];
   mode?: ProductionMode;
+  format?: ProductionFormat;
+  /** Narration word budget for the format at the voice's measured speed. */
+  minWords?: number;
+  maxWords?: number;
 }
 
 export type SceneRole = 'hook' | 'fact' | 'outro';
@@ -156,6 +168,7 @@ export interface Production {
   contentId: number | null;
   topic: string;
   mode: ProductionMode;
+  format: ProductionFormat;
   status: ProductionStatus;
   currentStep: StepName | null;
   error: string | null;
@@ -341,6 +354,7 @@ export interface NewProduction {
   topic: string;
   contentId?: number;
   mode?: ProductionMode;
+  format?: ProductionFormat;
 }
 
 /** URL scheme the renderer uses to preview production media. */
@@ -395,3 +409,18 @@ export interface VoiceSample {
 }
 
 export const sampleUrl = (file: string): string => `${MEDIA_SCHEME}://sample/${encodeURIComponent(file)}`;
+
+/** Short neutral line for auditioning voices: a brand name, a number, an acronym and plain speech. */
+export const VOICE_PREVIEW_TEXT = "Hello, and welcome to AI, Actually. Today we look at how one open model handles 30 languages, and why clear, careful reporting still matters.";
+
+export type PreviewEngine = 'sherpa' | 'piper' | 'windows-sapi';
+
+export interface VoicePreview {
+  url: string;
+  engine: PreviewEngine;
+  /** The voice the engine actually used (always the one requested; anything else is an error). */
+  voice: string;
+  durationSec: number;
+  /** True when served from the preview cache without re-synthesising. */
+  cached: boolean;
+}

@@ -1,4 +1,4 @@
-import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS, type Brief, type Claim, type ProviderStatus, type Scene, type Source, type Storyboard } from '../../shared/production';
+import { CLAIM_KIND_LABELS, PRODUCTION_FORMATS, SOURCE_KIND_LABELS, type ProductionFormat, type Brief, type Claim, type ProviderStatus, type Scene, type Source, type Storyboard } from '../../shared/production';
 import { narrateClaim, QUALIFIERS } from '../research/evidence';
 import { CancelledError } from '../media/ffmpeg';
 import { USER_AGENT } from './http';
@@ -106,9 +106,20 @@ const SOURCE_CHARS = 2200;
 /** Hard ceiling so a script fits a sub-60s short at typical TTS speeds (~2.2-2.6 words/s). */
 export const MAX_SCRIPT_WORDS = 140;
 
-export function lengthProblem(sb: Storyboard, maxWords = MAX_SCRIPT_WORDS): string | null {
+export function lengthProblem(sb: Storyboard, maxWords = MAX_SCRIPT_WORDS, minWords = 0, format: ProductionFormat = 'short'): string | null {
   const words = sb.scenes.reduce((n, s) => n + s.narration.split(/\s+/).filter(Boolean).length, 0);
-  return words > maxWords ? `The script is ${words} words; it must be at most ${maxWords} so the video stays under 60 seconds. Shorten it.` : null;
+  const f = PRODUCTION_FORMATS[format];
+  if (words > maxWords) return `The script is ${words} words; it must be at most ${maxWords} so the video stays under ${f.maxSec} seconds. Shorten it.`;
+  if (words < minWords) return `The script is ${words} words; it must be at least ${minWords} so the video runs ${f.minSec}–${f.maxSec} seconds. Add sourced detail from the evidence claims; never pad.`;
+  return null;
+}
+
+/** Narration word budget for a format at the voice's natural speed (the voice is never sped up to fit). */
+export function wordBudget(format: ProductionFormat, wordsPerSec: number): { minWords: number; maxWords: number } {
+  if (format === 'short') return { minWords: 0, maxWords: maxWordsForVoice(wordsPerSec) };
+  const wps = wordsPerSec && Number.isFinite(wordsPerSec) ? wordsPerSec : 2.3;
+  // Scene padding and sentence pauses add ~10-15 % to spoken time; aim for ~66-100 s of speech.
+  return { minWords: Math.round(wps * 66), maxWords: Math.max(180, Math.min(300, Math.round(wps * 100))) };
 }
 
 /** Word ceiling that keeps a short under ~58 s at the voice's natural speed (never speeding the voice up). */
@@ -118,6 +129,8 @@ export function maxWordsForVoice(wordsPerSec: number): number {
 }
 
 export function buildMessages(input: { brief: Brief; sources: Source[]; channelName: string }, opts: { maxWords?: number } = {}): { role: string; content: string }[] {
+  const format: ProductionFormat = input.brief.format ?? 'short';
+  const spec = PRODUCTION_FORMATS[format];
   const sources = input.sources
     .map((s) => `[${s.id}] ${s.title} (${s.publisher}${s.kind ? `, ${SOURCE_KIND_LABELS[s.kind]}` : ''}${s.publishedAt ? `, ${s.publishedAt.slice(0, 10)}` : ''})\n${s.excerpt.slice(0, SOURCE_CHARS)}`)
     .join('\n\n');
@@ -127,10 +140,13 @@ export function buildMessages(input: { brief: Brief; sources: Source[]; channelN
         .map((c) => `- [${c.id}] (${CLAIM_KIND_LABELS[c.kind]}${c.kind === 'confirmed' ? '' : `, attribute to ${c.attribution}`}; sources ${c.sourceIds.join(', ')}; ${c.independentSources} independent) ${c.text}`)
         .join('\n')
     : input.brief.keyFacts.map((f) => `- [${f.sourceId}] ${f.text}`).join('\n');
-  const maxWords = opts.maxWords ?? MAX_SCRIPT_WORDS;
+  const maxWords = input.brief.maxWords ?? opts.maxWords ?? MAX_SCRIPT_WORDS;
+  const minWords = input.brief.minWords || Math.round(maxWords * 0.7);
   const system = [
     `You are the head writer of "${input.channelName}", a faceless short-form video channel about ${input.brief.audience.replace(/^Short-form viewers interested in /, '') || 'technology'}.`,
-    'You write tight, original, high-retention scripts for 45-60 second vertical videos (TikTok, YouTube Shorts, Reels).',
+    format === 'standard'
+      ? 'You write original, high-retention scripts for 65-120 second vertical videos (TikTok, YouTube Shorts, Reels): deeper than a short, with context and why it matters, but every extra second must earn its place.'
+      : 'You write tight, original, high-retention scripts for 45-60 second vertical videos (TikTok, YouTube Shorts, Reels).',
     'Hard rules, never broken:',
     '1. Every factual statement must come from the SOURCES you are given. Do not use outside knowledge.',
     '2. Never introduce a number, date, name, product, company or acronym that is not written in the cited source.',
@@ -158,9 +174,9 @@ Write the script as JSON:
 
 Structure:
 - hook: 1 sentence, max 18 words. A question, contrast or surprising angle that makes people stay. It must not state facts that are not in the sources.
-- 3 to 5 fact scenes, each 12-28 words, one idea per scene, building on the previous one. Restate the sources plainly; do not add new claims.
+${format === 'standard' ? `- ${spec.factScenes[0]} to ${spec.factScenes[1]} fact scenes, each 15-35 words, one idea per scene, building on the previous one: what happened, the context from the sources, the evidence, and why it matters to viewers (only as far as the sources support it). Restate the sources plainly; do not add new claims, filler or repetition.` : '- 3 to 5 fact scenes, each 12-28 words, one idea per scene, building on the previous one. Restate the sources plainly; do not add new claims.'}
 - outro: max 25 words. Tell viewers the sources are in the description and to follow ${input.channelName}; you may end with a question for the comments.
-- Total narration ${Math.round(maxWords * 0.7)}-${maxWords - 10} words (the video must stay under 60 seconds at a natural pace). Never exceed ${maxWords} words.
+- Total narration ${minWords}-${maxWords - 10} words (the video must run ${format === 'standard' ? `${spec.minSec}-${spec.maxSec}` : 'under 60'} seconds at a natural pace). Never exceed ${maxWords} words.
 - onScreenText: max 5 punchy words. visualQuery: 2-4 concrete words describing a real image to search for.`;
   return [
     { role: 'system', content: system },
@@ -272,6 +288,7 @@ export class OpenAICompatibleWriter implements Writer {
       );
     }
     const messages = buildMessages(input, { maxWords: this.o.maxWords });
+    const maxWords = input.brief.maxWords ?? this.o.maxWords;
     const grounding = { allowed: `${input.brief.topic} ${input.channelName}` };
     let tokens = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -279,7 +296,7 @@ export class OpenAICompatibleWriter implements Writer {
       tokens += r.tokens;
       try {
         const sb = validateGrounding(parseLlmStoryboard(r.content, input.sources, `${this.id}:${model}`, input.brief.claims), input.sources, grounding);
-        const problems = [...(input.brief.claims?.length ? claimProblems(sb, input.brief.claims) : []), lengthProblem(sb, this.o.maxWords)].filter((x): x is string => !!x);
+        const problems = [...(input.brief.claims?.length ? claimProblems(sb, input.brief.claims) : []), lengthProblem(sb, maxWords, input.brief.minWords ?? 0, input.brief.format ?? 'short')].filter((x): x is string => !!x);
         if (problems.length) throw new InvalidStoryboardError(problems.join(' '));
         return { storyboard: sb, units: tokens };
       } catch (e) {

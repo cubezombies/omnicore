@@ -27,6 +27,7 @@ interface ProductionRow {
   content_id: number | null;
   topic: string;
   mode: 'explainer' | 'news';
+  format?: 'short' | 'standard';
   user_notes: string;
   status: ProductionStatus;
   current_step: StepName | null;
@@ -133,13 +134,13 @@ export class ProductionRepository {
     contentId: number | null,
     userNotes: string,
     mode: 'explainer' | 'news' = 'explainer',
-    extra: { origin?: 'manual' | 'autonomous'; ideaId?: number | null; destinations?: ProductionDestination[] } = {}
+    extra: { origin?: 'manual' | 'autonomous'; ideaId?: number | null; destinations?: ProductionDestination[]; format?: 'short' | 'standard' } = {}
   ): Production {
     this.db.exec('BEGIN');
     try {
       const res = this.db
-        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes, mode, origin, idea_id, destinations) VALUES (?,?,?,?,?,?,?,?)')
-        .run(channelId, contentId, topic, userNotes, mode, extra.origin ?? 'manual', extra.ideaId ?? null, JSON.stringify(extra.destinations ?? []));
+        .prepare('INSERT INTO productions (channel_id, content_id, topic, user_notes, mode, origin, idea_id, destinations, format) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(channelId, contentId, topic, userNotes, mode, extra.origin ?? 'manual', extra.ideaId ?? null, JSON.stringify(extra.destinations ?? []), extra.format ?? 'short');
       const id = Number(res.lastInsertRowid);
       const ins = this.db.prepare('INSERT INTO production_steps (production_id, step) VALUES (?, ?)');
       for (const s of PRODUCTION_STEPS) ins.run(id, s);
@@ -187,6 +188,7 @@ export class ProductionRepository {
       contentId: r.content_id === null ? null : Number(r.content_id),
       topic: r.topic,
       mode: r.mode ?? 'explainer',
+      format: r.format ?? 'short',
       status: r.status,
       currentStep: r.current_step,
       error: r.error,

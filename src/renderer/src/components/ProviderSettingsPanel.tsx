@@ -1,3 +1,4 @@
+import { VoiceList } from './VoiceList';
 import { useEffect, useState } from 'react';
 import {
   KOKORO_VOICES,
@@ -223,16 +224,7 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
           </label>
           {s.narration === 'sherpa' ? (
             <>
-              <label className="field">
-                <span>Kokoro voice</span>
-                <select value={s.sherpaVoice} onChange={(e) => set('sherpaVoice', e.target.value as KokoroVoiceId)}>
-                  {KOKORO_VOICES.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <VoiceList label="Kokoro voice" name="sherpaVoice" engine="sherpa" voices={KOKORO_VOICES.map((v) => ({ id: v.id, label: v.label }))} value={s.sherpaVoice} onSelect={(id) => set('sherpaVoice', id as KokoroVoiceId)} />
               {status?.find((x) => x.id === 'sherpa')?.available === false && (
                 <div className="install-row">
                   <button className="secondary" disabled={installing} onClick={installKokoroNow}>
@@ -246,30 +238,10 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
               </label>
             </>
           ) : s.narration === 'windows-sapi' ? (
-            <label className="field">
-              <span>Windows voice</span>
-              <select value={s.voice} onChange={(e) => set('voice', e.target.value)}>
-                <option value="">System default</option>
-                {opts('windows-sapi').map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <VoiceList label="Windows voice" name="sapiVoice" engine="windows-sapi" voices={[{ id: '', label: 'System default', previewable: false }, ...opts('windows-sapi').map((v) => ({ id: v, label: v }))]} value={s.voice} onSelect={(id) => set('voice', id)} />
           ) : (
             <>
-              <label className="field">
-                <span>Installed Piper voice</span>
-                <select value={s.piperVoice} onChange={(e) => set('piperVoice', e.target.value)}>
-                  <option value="">First installed</option>
-                  {opts('piper').map((v) => (
-                    <option key={v} value={v}>
-                      {v.split(/[\\/]/).pop()}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <VoiceList label="Installed Piper voice" name="piperVoice" engine="piper" voices={[{ id: '', label: 'First installed', previewable: false }, ...opts('piper').map((v) => ({ id: v, label: v.split(/[\/]/).pop() ?? v }))]} value={s.piperVoice} onSelect={(id) => set('piperVoice', id)} />
               <div className="install-row">
                 <select aria-label="Piper voice to install" value={voiceToInstall} onChange={(e) => setVoiceToInstall(e.target.value as PiperVoiceId)}>
                   {PIPER_VOICES.map((v) => (

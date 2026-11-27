@@ -25,9 +25,9 @@ import { buildMetadata } from '../publishing/metadata';
 import type { Transcriber } from '../qa/asr';
 import { runQaChecks, summarise, type RepairAction } from '../qa/engine';
 import { effectiveWordsPerSec } from '../providers/registry';
-import { maxWordsForVoice } from '../providers/writers';
+import { wordBudget } from '../providers/writers';
 import type { PlatformMetadata } from '../../shared/operations';
-import type { KokoroVoiceId } from '../../shared/production';
+import { PRODUCTION_FORMATS, type KokoroVoiceId } from '../../shared/production';
 import { runResearch, type EngineOptions } from '../research/engine';
 import type { RawSource } from '../research/dedupe';
 import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS } from '../../shared/production';
@@ -293,8 +293,14 @@ export class ProductionRunner {
 
     brief: async (c) => {
       const p = this.d.repo.get(c.id);
-      const maxWords = Math.round(maxWordsForVoice(effectiveWordsPerSec(c.settings)) * c.budgetScale);
-      const brief = buildEvidenceBrief(p.topic, p.sources, this.d.channel(p.channelId).niche, p.mode, maxWords);
+      const budget = wordBudget(p.format, effectiveWordsPerSec(c.settings));
+      const maxWords = Math.round(budget.maxWords * c.budgetScale);
+      const brief = buildEvidenceBrief(p.topic, p.sources, this.d.channel(p.channelId).niche, p.mode, maxWords, p.format, Math.min(budget.minWords, maxWords - 20));
+      const fmt = PRODUCTION_FORMATS[p.format];
+      // Editorial standard: a longer video needs more independent evidence, never padding.
+      const usedSources = new Set((brief.claims ?? []).flatMap((cl) => cl.sourceIds)).size;
+      if ((brief.claims?.length ?? 0) < fmt.minClaims || usedSources < fmt.minSources)
+        throw new Error(`Not enough evidence for a ${fmt.label} video: ${brief.claims?.length ?? 0} claims from ${usedSources} sources (needs ${fmt.minClaims} claims from ${fmt.minSources} sources). Produce it as a Short, or add sources.`);
       this.d.repo.update(c.id, { brief });
       this.audit({ type: 'evidence.claims', productionId: c.id, data: { maxWords, claims: (brief.claims ?? []).map((cl) => ({ id: cl.id, kind: cl.kind, sources: cl.sourceIds, independent: cl.independentSources, attribution: cl.attribution })) } });
       const kinds = new Map<string, number>();
@@ -363,7 +369,7 @@ export class ProductionRunner {
       }
       const total = this.d.repo.assets(c.id, 'narration').reduce((s, a) => s + Number(a.meta.durationSec), 0);
       this.audit({ type: 'narration.completed', productionId: c.id, data: { provider: n.id, voice: this.d.repo.assets(c.id, 'narration')[0]?.meta.voice, seconds: +total.toFixed(2), fallback: fallbackNote || undefined } });
-      c.progress(1, `${scenes.length} clips · ${total.toFixed(1)}s · ${n.label}${total > 62 ? ' · over 60 s: shorten the script rather than speeding up the voice' : ''}${fallbackNote}`);
+      c.progress(1, `${scenes.length} clips · ${total.toFixed(1)}s · ${n.label}${total > PRODUCTION_FORMATS[this.d.repo.get(c.id).format].maxSec + 2 ? ` · over ${PRODUCTION_FORMATS[this.d.repo.get(c.id).format].maxSec} s: shorten the script rather than speeding up the voice` : ''}${fallbackNote}`);
     },
 
     visuals: async (c) => {

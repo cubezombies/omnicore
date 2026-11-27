@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { PlatformStats } from './analytics';
 import type { Platform, PlatformMetadata, Privacy, TikTokCreatorInfo, TikTokPostOptions } from '../../shared/operations';
 import { inSeconds, loopbackAuthorize, OAuthError, pkce, type TokenSet } from './oauth';
 
@@ -54,6 +55,8 @@ export interface PlatformClient {
   publish(r: PublishRequest): Promise<PublishResult>;
   verify(tokens: TokenSet, remoteId: string, app: PlatformApp): Promise<VerifyResult>;
   creatorInfo?(tokens: TokenSet): Promise<TikTokCreatorInfo>;
+  /** Audience numbers for the account and the given videos; absent when the platform can't report them. */
+  stats?(tokens: TokenSet, remoteIds: string[]): Promise<PlatformStats>;
 }
 
 export type FetchFn = typeof fetch;
@@ -224,7 +227,7 @@ export function youtubeClient(f: FetchFn = fetch): PlatformClient {
         open,
         signal,
         buildAuthUrl: (redirect, state) =>
-          `https://accounts.google.com/o/oauth2/v2/auth?${form({ client_id: app.clientId, redirect_uri: redirect, response_type: 'code', scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly', access_type: 'offline', prompt: 'consent', state, code_challenge: p.challenge, code_challenge_method: 'S256' })}`
+          `https://accounts.google.com/o/oauth2/v2/auth?${form({ client_id: app.clientId, redirect_uri: redirect, response_type: 'code', scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly', access_type: 'offline', prompt: 'consent', state, code_challenge: p.challenge, code_challenge_method: 'S256' })}`
       });
       const t = tokens(await json(await f('https://oauth2.googleapis.com/token', { method: 'POST', headers: FORM, body: form({ client_id: app.clientId, client_secret: app.clientSecret, code, code_verifier: p.verifier, grant_type: 'authorization_code', redirect_uri: redirectUri }) }), 'Google token exchange'));
       const ch = ((await json(await f('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', { headers: bearer(t) }), 'YouTube channel')).items as Record<string, any>[] | undefined)?.[0];
@@ -259,6 +262,34 @@ export function youtubeClient(f: FetchFn = fetch): PlatformClient {
       const s = v.status.uploadStatus as string;
       if (s === 'failed' || s === 'rejected') return { state: 'failed', url: null, detail: `${s}: ${v.status.failureReason ?? v.status.rejectionReason ?? ''}` };
       return { state: s === 'processed' ? 'published' : 'processing', url: `https://youtube.com/shorts/${id}`, detail: `${s} · ${v.status.privacyStatus}` };
+    },
+    async stats(t, remoteIds) {
+      const num = (v: unknown) => (v === undefined || v === null || v === '' ? null : Number(v));
+      const ch = ((await json(await f('https://www.googleapis.com/youtube/v3/channels?part=statistics&mine=true', { headers: bearer(t) }), 'YouTube channel stats')).items as Record<string, any>[] | undefined)?.[0];
+      const out: PlatformStats = { followers: ch?.statistics?.hiddenSubscriberCount ? null : num(ch?.statistics?.subscriberCount), totalViews: num(ch?.statistics?.viewCount), videos: {} };
+      for (let i = 0; i < remoteIds.length; i += 50) {
+        const ids = remoteIds.slice(i, i + 50).map(encodeURIComponent).join(',');
+        const items = ((await json(await f(`https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${ids}`, { headers: bearer(t) }), 'YouTube video stats')).items as Record<string, any>[] | undefined) ?? [];
+        for (const v of items) out.videos[v.id] = { views: num(v.statistics?.viewCount), likes: num(v.statistics?.likeCount), comments: num(v.statistics?.commentCount) };
+      }
+      // Watch time and Shorts views come from the YouTube Analytics API (needs it enabled in the Google Cloud project).
+      const day = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
+      const report = async (from: number) => {
+        const q = form({ ids: 'channel==MINE', startDate: day(from), endDate: day(0), metrics: 'views,estimatedMinutesWatched', dimensions: 'creatorContentType' });
+        return ((await json(await f(`https://youtubeanalytics.googleapis.com/v2/reports?${q}`, { headers: bearer(t) }), 'YouTube Analytics')).rows as [string, number, number][] | undefined) ?? [];
+      };
+      try {
+        const year = await report(365);
+        const q90 = await report(90);
+        const m30 = await report(30);
+        out.longformWatchHours12m = Math.round(year.filter((r) => r[0] !== 'SHORTS').reduce((s, r) => s + Number(r[2]), 0) / 60);
+        out.shortsViews90d = q90.filter((r) => r[0] === 'SHORTS').reduce((s, r) => s + Number(r[1]), 0);
+        out.views30d = m30.reduce((s, r) => s + Number(r[1]), 0);
+      } catch (e) {
+        out.longformWatchHours12m = out.shortsViews90d = out.views30d = null;
+        out.detail = `Watch time unavailable: ${e instanceof Error ? e.message : String(e)} (enable the YouTube Analytics API in the Google Cloud project and reconnect).`;
+      }
+      return out;
     }
   };
 }

@@ -217,6 +217,53 @@ export interface EngineStatus {
 }
 
 // ---- publishing (0.5 Stage 2) ----
+export interface VideoStats {
+  publicationId: number;
+  productionId: number;
+  title: string;
+  url: string;
+  privacy: string;
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+}
+
+export interface PlatformAnalytics {
+  platform: Platform;
+  handle: string;
+  /** False when the platform can't report stats for this account (with the reason in detail). */
+  available: boolean;
+  detail: string;
+  followers: number | null;
+  totalViews: number | null;
+  videos: VideoStats[];
+}
+
+/** One requirement; requirements sharing an `either` group are alternatives (meet any one). */
+export interface MonetizationRequirement {
+  label: string;
+  current: number | null;
+  target: number;
+  either?: string;
+}
+
+export interface MonetizationProgram {
+  id: string;
+  platform: Platform;
+  name: string;
+  requirements: MonetizationRequirement[];
+  /** True only when every requirement is known and met. */
+  eligible: boolean;
+  note: string;
+  source: string;
+}
+
+export interface AnalyticsReport {
+  capturedAt: string;
+  platforms: PlatformAnalytics[];
+  programs: MonetizationProgram[];
+}
+
 export interface Publication {
   id: number;
   productionId: number;

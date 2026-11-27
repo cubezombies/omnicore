@@ -2,6 +2,9 @@ import path from 'node:path';
 import { PLATFORMS, type AutonomySettings, type Platform, type Privacy, type TikTokPostOptions } from '../shared/operations';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
 import {
+  type PreviewEngine,
+  type ProductionFormat,
+  isProductionFormat,
   KOKORO_VOICES,
   RESEARCH_PROVIDERS,
   MUSIC_MODES,
@@ -85,7 +88,8 @@ export function newProduction(v: unknown): NewProduction {
   const mode: ProductionMode | undefined = o.mode === undefined ? undefined : o.mode === 'news' || o.mode === 'explainer' ? o.mode : (() => {
     throw new ValidationError('Mode must be explainer or news');
   })();
-  return { topic, contentId: o.contentId === undefined || o.contentId === null ? undefined : id(o.contentId, 'contentId'), ...(mode ? { mode } : {}) };
+  if (o.format !== undefined && !isProductionFormat(o.format)) throw new ValidationError('Format must be short or standard');
+  return { topic, contentId: o.contentId === undefined || o.contentId === null ? undefined : id(o.contentId, 'contentId'), ...(mode ? { mode } : {}), ...(o.format ? { format: o.format as ProductionFormat } : {}) };
 }
 
 export function stepName(v: unknown): StepName {
@@ -249,6 +253,19 @@ export function presenter(engine: unknown, voice: unknown): { engine: string; vo
   if (engine === 'windows-sapi') return { engine, voice: str(voice, 'Voice', 200) };
   if (engine === 'global') return { engine, voice: '' };
   throw new ValidationError('Unknown presenter engine');
+}
+export function previewVoice(engine: unknown, voice: unknown): { engine: PreviewEngine; voice: string } {
+  if (engine === 'sherpa') {
+    if (!KOKORO_VOICES.some((k) => k.id === voice)) throw new ValidationError('Unknown Kokoro voice');
+    return { engine, voice: voice as string };
+  }
+  if (engine === 'piper') {
+    const p = str(voice, 'Voice', 1000);
+    if (!p.toLowerCase().endsWith('.onnx')) throw new ValidationError('Piper voice must be an installed .onnx model');
+    return { engine, voice: p };
+  }
+  if (engine === 'windows-sapi') return { engine, voice: str(voice, 'Voice', 200) };
+  throw new ValidationError('Unknown voice engine');
 }
 export function autonomy(v: unknown): AutonomySettings {
   const o = object(v, 'autonomy');

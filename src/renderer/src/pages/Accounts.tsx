@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { KOKORO_VOICES } from '../../../shared/production';
+import { VoiceList } from '../components/VoiceList';
 import { PLATFORMS, PLATFORM_LABELS, type AuditVerification, type BrandDestination, type Incident, type Platform, type PlatformAccount, type PlatformAppSummary, type Privacy } from '../../../shared/operations';
 import { errorText } from '../components/ProductionDetail';
 
@@ -114,12 +115,14 @@ export function Accounts() {
       {presenter && (
         <>
           <h2>Presenter voice</h2>
-          <label className="field"><span>AI, Actually presenter (used for this brand regardless of global narration settings)</span>
-            <select value={presenter.engine === 'sherpa' ? presenter.voice : presenter.engine} onChange={(e) => act(() => (e.target.value === 'global' ? window.api.setBrandPresenter('global', '') : window.api.setBrandPresenter('sherpa', e.target.value)))}>
-              {KOKORO_VOICES.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
-              <option value="global">Use global narration settings</option>
-            </select>
-          </label>
+          <VoiceList
+            label="AI, Actually presenter (used for this brand regardless of global narration settings)"
+            name="presenterVoice"
+            engine="sherpa"
+            voices={[...KOKORO_VOICES.map((k) => ({ id: k.id as string, label: k.label })), { id: 'global', label: 'Use global narration settings', previewable: false }]}
+            value={presenter.engine === 'sherpa' ? presenter.voice : presenter.engine}
+            onSelect={(id) => act(() => (id === 'global' ? window.api.setBrandPresenter('global', '') : window.api.setBrandPresenter('sherpa', id)))}
+          />
         </>
       )}
 
