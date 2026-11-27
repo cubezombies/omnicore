@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AuditLedger } from '../audit/ledger';
 import type { OperationsRepository } from '../db/operations';
 import type { ProductionRepository } from '../db/productions';
-import type { Platform, PlatformAppSummary, Privacy, Publication } from '../../shared/operations';
+import type { Platform, PlatformAppSummary, Privacy, Publication, TikTokCreatorInfo, TikTokPostOptions } from '../../shared/operations';
 import { OAuthError, type SecretBox, type TokenSet } from './oauth';
 import type { PlatformApp, PlatformClient } from './platforms';
 
@@ -183,7 +183,29 @@ export class Publisher {
     return out;
   }
 
-  async publish(productionId: number, platform: Platform, actor: 'user' | 'engine', signal?: AbortSignal): Promise<Publication> {
+  /** TikTok posting screen data for this production's assigned account (live from TikTok). */
+  async tiktokCreatorInfo(productionId: number): Promise<TikTokCreatorInfo> {
+    const p = this.refreshProduction(productionId);
+    const dest = p.destinations.find((d) => d.platform === 'tiktok');
+    if (!dest?.accountId) throw new PublishBlockedError('No TikTok account is assigned to this production.');
+    const client = this.d.clients.tiktok;
+    if (!client.creatorInfo) throw new PublishBlockedError('TikTok creator info is unavailable.');
+    const info = await client.creatorInfo(await this.tokensFor(dest.accountId));
+    // The renderer's CSP allows no remote images, so inline the avatar as a data URL.
+    if (/^https:\/\//.test(info.avatarUrl)) {
+      try {
+        const res = await fetch(info.avatarUrl, { signal: AbortSignal.timeout(8000) });
+        const type = res.headers.get('content-type') ?? '';
+        const buf = Buffer.from(await res.arrayBuffer());
+        info.avatarUrl = res.ok && /^image\/(jpeg|png|webp|gif)/.test(type) && buf.length < 2_000_000 ? `data:${type.split(';')[0]};base64,${buf.toString('base64')}` : '';
+      } catch {
+        info.avatarUrl = '';
+      }
+    } else info.avatarUrl = '';
+    return info;
+  }
+
+  async publish(productionId: number, platform: Platform, actor: 'user' | 'engine', signal?: AbortSignal, tiktok?: TikTokPostOptions): Promise<Publication> {
     const blockers = this.blockers(productionId, platform);
     if (blockers.length) throw new PublishBlockedError(blockers.join(' '));
     const p = this.d.productions.get(productionId);
@@ -191,17 +213,17 @@ export class Publisher {
     const approvedBy = this.d.audit.events({ productionId }).filter((e) => e.type === 'approval.granted').at(-1)?.actor ?? actor;
     const ins = this.d.db
       .prepare('INSERT INTO publications (production_id, platform, account_id, privacy_requested, approved_by) VALUES (?,?,?,?,?)')
-      .run(productionId, platform, dest.accountId, dest.privacy, approvedBy);
+      .run(productionId, platform, dest.accountId, tiktok?.privacyLevel ?? dest.privacy, approvedBy);
     const id = Number(ins.lastInsertRowid);
     const set = (f: Partial<Record<'status' | 'remote_id' | 'url' | 'detail' | 'privacy_applied', string>>) => {
       const keys = Object.keys(f);
       this.d.db.prepare(`UPDATE publications SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).run(...keys.map((k) => f[k as keyof typeof f]!), id);
     };
-    this.d.audit.record({ actor, type: 'publish.started', productionId, data: { platform, accountId: dest.accountId, handle: dest.handle, privacy: dest.privacy, approvedBy } });
+    this.d.audit.record({ actor, type: 'publish.started', productionId, data: { platform, accountId: dest.accountId, handle: dest.handle, privacy: tiktok?.privacyLevel ?? dest.privacy, approvedBy, ...(tiktok ? { tiktok: { ...tiktok, caption: undefined } } : {}) } });
     this.syncStatus(productionId);
     try {
       const tokens = await this.tokensFor(dest.accountId!);
-      const r = await this.d.clients[platform].publish({ tokens, file: p.outputPath!, productionId, metadata: p.metadata[platform], privacy: dest.privacy, app: this.getApp(platform)!, signal });
+      const r = await this.d.clients[platform].publish({ tokens, file: p.outputPath!, productionId, metadata: p.metadata[platform], privacy: dest.privacy, app: this.getApp(platform)!, tiktok, signal });
       set({ status: 'processing', remote_id: r.remoteId, privacy_applied: r.appliedPrivacy, detail: r.notes.join(' ') });
       this.d.audit.record({ actor, type: 'publish.submitted', productionId, data: { platform, remoteId: r.remoteId, appliedPrivacy: r.appliedPrivacy, notes: r.notes } });
       const deadline = Date.now() + (this.d.verifyWaitMs ?? 120_000);

@@ -222,7 +222,8 @@ export interface Publication {
   productionId: number;
   platform: Platform;
   accountId: number | null;
-  privacyRequested: Privacy;
+  /** Omnicore privacy, or the exact TikTok level the user chose on the posting screen. */
+  privacyRequested: string;
   privacyApplied: string;
   status: 'uploading' | 'processing' | 'published' | 'failed';
   remoteId: string;
@@ -242,4 +243,30 @@ export interface PlatformAppSummary {
   hasAccessToken: boolean;
   redirectPort: number;
   publicVideoBaseUrl: string;
+}
+
+/** What TikTok reports about the connected creator, shown on the posting screen (Content Sharing Guidelines). */
+export interface TikTokCreatorInfo {
+  nickname: string;
+  username: string;
+  avatarUrl: string;
+  /** The only privacy levels the user may pick from; TikTok forbids a preselected default. */
+  privacyLevelOptions: string[];
+  commentDisabled: boolean;
+  duetDisabled: boolean;
+  stitchDisabled: boolean;
+  maxVideoPostDurationSec: number;
+}
+
+/** Choices the user made on the TikTok posting screen. */
+export interface TikTokPostOptions {
+  privacyLevel: string;
+  caption: string;
+  allowComment: boolean;
+  allowDuet: boolean;
+  allowStitch: boolean;
+  /** Commercial content disclosure: promoting the creator's own business. */
+  brandOrganic: boolean;
+  /** Commercial content disclosure: paid partnership / promoting a third party. */
+  brandContent: boolean;
 }

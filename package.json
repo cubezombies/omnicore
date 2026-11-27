@@ -1,7 +1,7 @@
 {
   "name": "omnicore",
   "productName": "Omnicore",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Omnicore: desktop operations console and video factory for an AI-produced media business",
   "main": "out/main/index.js",
   "private": true,

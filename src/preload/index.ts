@@ -61,7 +61,8 @@ const api: AppApi = {
   connectAccount: (accountId) => ipcRenderer.invoke(IPC.connectAccount, accountId),
   publications: (productionId) => ipcRenderer.invoke(IPC.publications, productionId),
   publishBlockers: (productionId) => ipcRenderer.invoke(IPC.publishBlockers, productionId),
-  publishProduction: (productionId, platform) => ipcRenderer.invoke(IPC.publishProduction, productionId, platform),
+  publishProduction: (productionId, platform, tiktok) => ipcRenderer.invoke(IPC.publishProduction, productionId, platform, tiktok),
+  tiktokCreatorInfo: (productionId) => ipcRenderer.invoke(IPC.tiktokCreatorInfo, productionId),
   onProductionChanged: (cb) => {
     const listener = (_e: IpcRendererEvent, id: unknown) => {
       if (typeof id === 'number') cb(id);

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { PLATFORMS, type AutonomySettings, type Platform, type Privacy } from '../shared/operations';
+import { PLATFORMS, type AutonomySettings, type Platform, type Privacy, type TikTokPostOptions } from '../shared/operations';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
 import {
   KOKORO_VOICES,
@@ -283,4 +283,22 @@ export function platformApp(v: unknown): { clientId?: string; clientSecret?: str
     redirectPort: o.redirectPort === undefined ? undefined : Math.round(num(o.redirectPort, 'Redirect port', 0, 65535)),
     publicVideoBaseUrl: base
   };
+}
+
+const TIKTOK_LEVELS = ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY'];
+export function tiktokPost(v: unknown): TikTokPostOptions {
+  const o = object(v, 'TikTok post');
+  const privacyLevel = str(o.privacyLevel, 'Privacy', 40);
+  if (!TIKTOK_LEVELS.includes(privacyLevel)) throw new ValidationError('Choose who can view this post.');
+  const out: TikTokPostOptions = {
+    privacyLevel,
+    caption: str(o.caption ?? '', 'Caption', 2200),
+    allowComment: bool(o.allowComment),
+    allowDuet: bool(o.allowDuet),
+    allowStitch: bool(o.allowStitch),
+    brandOrganic: bool(o.brandOrganic),
+    brandContent: bool(o.brandContent)
+  };
+  if (out.brandContent && privacyLevel === 'SELF_ONLY') throw new ValidationError('Branded content cannot be private.');
+  return out;
 }

@@ -1,5 +1,5 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
-import type { AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, PlatformAppSummary, Privacy, Publication, QaRun } from './operations';
+import type { AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, PlatformAppSummary, Privacy, Publication, QaRun, TikTokCreatorInfo, TikTokPostOptions } from './operations';
 import type {
   AudioKind,
   AudioTrack,
@@ -170,7 +170,8 @@ export interface AppApi {
   connectAccount(accountId: number): Promise<PlatformAccount>;
   publications(productionId: number): Promise<Publication[]>;
   publishBlockers(productionId: number): Promise<Record<string, string[]>>;
-  publishProduction(productionId: number, platform: Platform): Promise<Publication>;
+  publishProduction(productionId: number, platform: Platform, tiktok?: TikTokPostOptions): Promise<Publication>;
+  tiktokCreatorInfo(productionId: number): Promise<TikTokCreatorInfo>;
 
   /** Subscribe to production changes; returns an unsubscribe function. */
   onProductionChanged(cb: (productionId: number) => void): () => void;
@@ -236,5 +237,6 @@ export const IPC = {
   publications: 'publishing:list',
   publishBlockers: 'publishing:blockers',
   publishProduction: 'publishing:publish',
+  tiktokCreatorInfo: 'publishing:tiktok-creator',
   onProductionChanged: 'productions:changed'
 } as const satisfies Record<keyof AppApi, string>;

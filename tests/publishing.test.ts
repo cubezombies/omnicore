@@ -163,6 +163,21 @@ describe('publishing gates and verification', () => {
     expect(publisher.hasUserApprovedPublicPost()).toBe(false);
   });
 
+  it('posts exactly what the user chose on the TikTok posting screen', async () => {
+    const { publisher, acct, tt } = setup(fakeTikTok({ privacy: ['FOLLOWER_OF_CREATOR', 'SELF_ONLY'] }));
+    await publisher.connect(acct.id);
+    const info = await publisher.tiktokCreatorInfo(readyProduction());
+    expect(info).toMatchObject({ username: 'aiactually', privacyLevelOptions: ['FOLLOWER_OF_CREATOR', 'SELF_ONLY'], commentDisabled: false });
+    const choice = { privacyLevel: 'FOLLOWER_OF_CREATOR', caption: 'Edited caption #AI', allowComment: true, allowDuet: false, allowStitch: false, brandOrganic: true, brandContent: false };
+    const id = readyProduction();
+    const pub = await publisher.publish(id, 'tiktok', 'user', undefined, choice);
+    const init = JSON.parse(tt.calls.filter((c) => c.url.includes('/video/init/')).at(-1)!.body);
+    expect(init.post_info).toMatchObject({ title: 'Edited caption #AI', privacy_level: 'FOLLOWER_OF_CREATOR', disable_comment: false, disable_duet: true, disable_stitch: true, brand_organic_toggle: true, brand_content_toggle: false, is_aigc: true });
+    expect(pub).toMatchObject({ privacyRequested: 'FOLLOWER_OF_CREATOR', privacyApplied: 'FOLLOWER_OF_CREATOR' });
+    // A level TikTok doesn't offer is refused, never swapped for another one.
+    await expect(publisher.publish(readyProduction(), 'tiktok', 'user', undefined, { ...choice, privacyLevel: 'PUBLIC_TO_EVERYONE' })).rejects.toThrow(/no longer offers/);
+  });
+
   it('auto-publishes only after a user-approved public post exists', async () => {
     const { publisher, acct } = setup(fakeTikTok({ privacy: ['SELF_ONLY', 'PUBLIC_TO_EVERYONE'] }));
     await publisher.connect(acct.id);

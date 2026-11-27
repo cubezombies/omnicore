@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import type { Platform, PlatformMetadata, Privacy } from '../../shared/operations';
+import type { Platform, PlatformMetadata, Privacy, TikTokCreatorInfo, TikTokPostOptions } from '../../shared/operations';
 import { inSeconds, loopbackAuthorize, OAuthError, pkce, type TokenSet } from './oauth';
 
 /** Developer-app credentials the user registers with each platform (never bundled with Omnicore). */
@@ -31,6 +31,8 @@ export interface PublishRequest {
   metadata: PlatformMetadata;
   privacy: Privacy;
   app: PlatformApp;
+  /** TikTok: the user's choices from the posting screen. Absent only for engine auto-publish. */
+  tiktok?: TikTokPostOptions;
   signal?: AbortSignal;
 }
 export interface PublishResult {
@@ -51,6 +53,7 @@ export interface PlatformClient {
   refresh(app: PlatformApp, t: TokenSet): Promise<TokenSet>;
   publish(r: PublishRequest): Promise<PublishResult>;
   verify(tokens: TokenSet, remoteId: string, app: PlatformApp): Promise<VerifyResult>;
+  creatorInfo?(tokens: TokenSet): Promise<TikTokCreatorInfo>;
 }
 
 export type FetchFn = typeof fetch;
@@ -127,17 +130,39 @@ export function tiktokClient(f: FetchFn = fetch): PlatformClient {
       const b = await json(await f(`${TT}/oauth/token/`, { method: 'POST', headers: FORM, body: form({ client_key: app.clientId, client_secret: app.clientSecret, grant_type: 'refresh_token', refresh_token: prev.refreshToken }) }), 'TikTok token refresh');
       return tokens(b, prev);
     },
+    async creatorInfo(t) {
+      const c = (await json(await f(`${TT}/post/publish/creator_info/query/`, { method: 'POST', headers: auth(t), body: '{}' }), 'TikTok creator info')).data as Record<string, unknown>;
+      return {
+        nickname: String(c.creator_nickname ?? ''),
+        username: String(c.creator_username ?? ''),
+        avatarUrl: String(c.creator_avatar_url ?? ''),
+        privacyLevelOptions: (c.privacy_level_options as string[]) ?? [],
+        commentDisabled: Boolean(c.comment_disabled),
+        duetDisabled: Boolean(c.duet_disabled),
+        stitchDisabled: Boolean(c.stitch_disabled),
+        maxVideoPostDurationSec: Number(c.max_video_post_duration_sec ?? 0)
+      };
+    },
     async publish(r) {
-      const creator = (await json(await f(`${TT}/post/publish/creator_info/query/`, { method: 'POST', headers: auth(r.tokens), body: '{}' }), 'TikTok creator info')).data as Record<string, unknown>;
-      const options = (creator.privacy_level_options as string[]) ?? [];
-      const wanted = TIKTOK_PRIVACY[r.privacy];
+      const creator = await this.creatorInfo!(r.tokens);
+      const options = creator.privacyLevelOptions;
       const notes: string[] = [];
-      let privacy = wanted;
-      if (!options.includes(wanted)) {
-        // Never escalate visibility: fall back only to private, and say so.
-        if (!options.includes('SELF_ONLY')) throw new OAuthError(`TikTok offers no usable privacy level for this account (${options.join(', ') || 'none'}).`);
-        privacy = 'SELF_ONLY';
-        notes.push(`TikTok only allowed ${options.join(', ')} for this app/account; posted as SELF_ONLY (private). Make it public in the TikTok app, or get the app audited.`);
+      const o = r.tiktok;
+      let privacy: string;
+      if (o) {
+        // The user picked from TikTok's own list on the posting screen; never substitute another level.
+        if (!options.includes(o.privacyLevel)) throw new OAuthError(`TikTok no longer offers "${o.privacyLevel}" for this account (now: ${options.join(', ') || 'none'}). Reopen the posting screen.`);
+        if (o.brandContent && o.privacyLevel === 'SELF_ONLY') throw new OAuthError('Branded content cannot be posted as private (TikTok rule).');
+        privacy = o.privacyLevel;
+      } else {
+        const wanted = TIKTOK_PRIVACY[r.privacy];
+        privacy = wanted;
+        if (!options.includes(wanted)) {
+          // Never escalate visibility: fall back only to private, and say so.
+          if (!options.includes('SELF_ONLY')) throw new OAuthError(`TikTok offers no usable privacy level for this account (${options.join(', ') || 'none'}).`);
+          privacy = 'SELF_ONLY';
+          notes.push(`TikTok only allowed ${options.join(', ')} for this app/account; posted as SELF_ONLY (private). Make it public in the TikTok app, or get the app audited.`);
+        }
       }
       const size = fs.statSync(r.file).size;
       const init = (
@@ -147,15 +172,16 @@ export function tiktokClient(f: FetchFn = fetch): PlatformClient {
             headers: auth(r.tokens),
             body: JSON.stringify({
               post_info: {
-                title: r.metadata.caption.slice(0, 2200),
+                title: (o?.caption ?? r.metadata.caption).slice(0, 2200),
                 privacy_level: privacy,
-                disable_comment: Boolean(creator.comment_disabled),
-                disable_duet: Boolean(creator.duet_disabled),
-                disable_stitch: Boolean(creator.stitch_disabled),
+                // A setting the creator disabled in TikTok can never be turned on from here.
+                disable_comment: creator.commentDisabled || (o ? !o.allowComment : false),
+                disable_duet: creator.duetDisabled || (o ? !o.allowDuet : false),
+                disable_stitch: creator.stitchDisabled || (o ? !o.allowStitch : false),
                 video_cover_timestamp_ms: 1000,
                 is_aigc: r.metadata.aiDisclosure,
-                brand_content_toggle: false,
-                brand_organic_toggle: false
+                brand_content_toggle: o?.brandContent ?? false,
+                brand_organic_toggle: o?.brandOrganic ?? false
               },
               source_info: { source: 'FILE_UPLOAD', video_size: size, chunk_size: size, total_chunk_count: 1 }
             })

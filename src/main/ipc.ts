@@ -201,7 +201,13 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       const p = productions.get(v.id(id));
       return Object.fromEntries(p.destinations.map((d) => [d.platform, publisher.blockers(p.id, d.platform)]));
     },
-    publishProduction: (id, platform) => publisher.publish(v.id(id), v.platform(platform), 'user'),
+    publishProduction: (id, platform, tiktok) => {
+      const pl = v.platform(platform);
+      // TikTok posts from the UI must come from the posting screen (privacy chosen by the user, no default).
+      if (pl === 'tiktok' && tiktok === undefined) throw new Error('Open the TikTok posting screen to choose privacy and settings.');
+      return publisher.publish(v.id(id), pl, 'user', undefined, pl === 'tiktok' ? v.tiktokPost(tiktok) : undefined);
+    },
+    tiktokCreatorInfo: (id) => publisher.tiktokCreatorInfo(v.id(id)),
     resolveIncident: (id) => {
       ops.resolveIncident(v.id(id));
       audit.record({ actor: 'user', type: 'incident.resolved', subjectType: 'incident', subjectId: Number(id) });

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { Platform, Publication, QaRun } from '../../../shared/operations';
+import type { Platform, Publication, QaRun, TikTokPostOptions } from '../../../shared/operations';
+import { TikTokPostDialog } from './TikTokPostDialog';
 import {
   CLAIM_KIND_LABELS,
   SOURCE_KIND_LABELS,
@@ -245,6 +246,8 @@ function ReadinessPanel({ production: p }: { production: Production }) {
   const [blockers, setBlockers] = useState<Record<string, string[]>>({});
   const [publishing, setPublishing] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [ttOpen, setTtOpen] = useState(false);
+  const video = p.assets.find((a) => a.kind === 'video');
   useEffect(() => {
     void window.api.qaRuns(p.id).then(setRuns);
     void window.api.publications(p.id).then(setPubs);
@@ -260,7 +263,22 @@ function ReadinessPanel({ production: p }: { production: Production }) {
     }
   };
   const meta = Object.values(p.metadata ?? {});
+  const postTikTok = async (o: TikTokPostOptions) => {
+    setPublishing('tiktok');
+    setError(null);
+    try {
+      await window.api.publishProduction(p.id, 'tiktok', o);
+      setTtOpen(false);
+    } catch (e) {
+      setError(errorText(e));
+      setTtOpen(false);
+    } finally {
+      setPublishing(null);
+      setTick((x) => x + 1);
+    }
+  };
   const publish = async (platform: Platform) => {
+    if (platform === 'tiktok') return setTtOpen(true);
     const d = p.destinations.find((x) => x.platform === platform);
     if (d?.privacy === 'public' && !window.confirm(`Publish this video PUBLICLY to ${d.handle} on ${platform}? Anyone will be able to see it.`)) return;
     setPublishing(platform);
@@ -313,6 +331,16 @@ function ReadinessPanel({ production: p }: { production: Production }) {
           {Object.entries(blockers).filter(([, b]) => b.length).map(([pl, b]) => <li key={pl}>{pl}: {b.join(' ')}</li>)}
         </ul>
       )}
+      {ttOpen && (
+        <TikTokPostDialog
+          productionId={p.id}
+          videoUrl={video ? mediaUrl(p.id, video.path, p.updatedAt) : null}
+          durationSec={p.durationSec}
+          caption={p.metadata?.tiktok?.caption ?? ''}
+          onPost={postTikTok}
+          onClose={() => setTtOpen(false)}
+        />
+      )}
       {publishing && (
         <p className="small" role="status">
           <span className="spinner" aria-hidden="true" /> Uploading to {publishing} and waiting for {publishing} to confirm the post. This usually takes under two minutes; keep Omnicore open.
@@ -340,7 +368,7 @@ function ReadinessPanel({ production: p }: { production: Production }) {
         {p.approval === 'approved' &&
           p.destinations.map((d) => (
             <button key={d.platform} className="primary" disabled={publishing !== null || (blockers[d.platform]?.length ?? 1) > 0} title={(blockers[d.platform] ?? []).join(' ')} onClick={() => void publish(d.platform)}>
-              {publishing === d.platform ? `Publishing to ${d.platform}…` : `Publish to ${d.platform} (${d.privacy})`}
+              {publishing === d.platform ? `Publishing to ${d.platform}…` : d.platform === 'tiktok' ? 'Post to TikTok…' : `Publish to ${d.platform} (${d.privacy})`}
             </button>
           ))}
         <button className="secondary" onClick={() => act(() => window.api.runQa(p.id))}>Re-run QA</button>

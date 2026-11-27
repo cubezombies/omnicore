@@ -215,3 +215,18 @@ details summary { cursor: pointer; }
 .spinner { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.tt-dialog { width: min(880px, 94vw); max-height: 92vh; overflow: auto; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; }
+.tt-dialog::backdrop { background: rgb(2 6 23 / 0.72); }
+.tt-dialog h3 { margin: 0 0 12px; }
+.tt-body { display: grid; grid-template-columns: 240px 1fr; gap: 20px; align-items: start; }
+.tt-preview video { width: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: var(--radius); }
+.tt-form { display: flex; flex-direction: column; gap: 14px; }
+.tt-creator { display: flex; align-items: center; gap: 10px; }
+.tt-avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
+.tt-avatar-empty { display: inline-block; background: var(--surface-2); border: 1px solid var(--border); }
+.tt-field { display: flex; flex-direction: column; gap: 6px; border: 0; padding: 0; margin: 0; }
+.tt-field > span:first-child, .tt-field legend { font-weight: 600; font-size: 14px; }
+.tt-field textarea, .tt-field select { width: 100%; min-height: 40px; }
+.tt-field label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.tt-off { opacity: 0.5; }
+@media (max-width: 720px) { .tt-body { grid-template-columns: 1fr; } }
