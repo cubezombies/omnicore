@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { QaCategory, QaFinding, Severity } from '../../shared/operations';
-import { PRODUCTION_FORMATS, type Production } from '../../shared/production';
+import { PRODUCTION_FORMATS, type Production, type PronunciationFinding } from '../../shared/production';
 import { verifyVisualAssets } from '../media/assetPolicy';
 import { buildCues, type WordTiming } from '../media/captions';
 import { probe } from '../media/ffmpeg';
@@ -22,6 +22,8 @@ export interface QaContext {
   allowShareAlike: boolean;
   asr?: Transcriber;
   signal?: AbortSignal;
+  /** Pronunciation check of the script (terms nobody has confirmed are listed for review). */
+  pronunciation?: PronunciationFinding[];
 }
 
 export interface QaCheckResult extends QaFinding {
@@ -65,6 +67,29 @@ export function isFastStart(file: string): boolean {
  * Independent quality assurance. Every check re-derives its verdict from stored
  * evidence and the rendered file — it does not trust flags set by the generation steps.
  */
+/**
+ * Generated graphics must credit a source the scene actually cites (never a made-up or wrong publisher), and long
+ * scenes should not sit on one static card.
+ */
+export function graphicFindings(p: Production): QaCheckResult[] {
+  const out: QaCheckResult[] = [];
+  const scenes = p.storyboard?.scenes ?? [];
+  const graphics = p.assets.filter((a) => a.kind === 'image' && a.provider === 'graphics');
+  const wrong = graphics.filter((a) => {
+    const credited = a.meta.creditedTo as string | undefined;
+    if (!credited || credited === 'the cited source') return false;
+    const sc = scenes.find((s) => s.index === a.sceneIndex);
+    const cited = p.sources.filter((src) => sc?.sourceIds.includes(src.id)).map((src) => src.publisher);
+    const claimAttr = (p.brief?.claims ?? []).filter((c) => sc?.claimIds?.includes(c.id)).map((c) => c.attribution);
+    return ![...cited, ...claimAttr].includes(credited);
+  });
+  out.push(finding('visuals.attribution', 'visuals', 'major', wrong.length === 0, wrong.length ? `Graphics credit a source the scene doesn't cite: ${wrong.map((a) => `scene ${(a.sceneIndex ?? 0) + 1} (${a.meta.creditedTo})`).join('; ')}.` : 'Every graphic credits a source cited in its scene.', { scenes: wrong.map((a) => a.sceneIndex) }, 'revisuals'));
+  const narr = new Map(p.assets.filter((a) => a.kind === 'narration').map((a) => [a.sceneIndex, Number(a.meta.durationSec ?? 0)]));
+  const still = graphics.filter((a) => (narr.get(a.sceneIndex) ?? 0) > 9 && !(Array.isArray(a.meta.frames) && a.meta.frames.length > 1));
+  out.push(finding('visuals.static', 'visuals', 'minor', still.length === 0, still.length ? `Long scenes on a single static graphic: ${still.map((a) => `scene ${(a.sceneIndex ?? 0) + 1} (${(narr.get(a.sceneIndex) ?? 0).toFixed(0)} s)`).join(', ')}.` : 'No long scene sits on one static graphic.', { scenes: still.map((a) => a.sceneIndex) }));
+  return out;
+}
+
 /** Pixel spread (standard deviation of a tiny greyscale thumbnail); near zero means a blank or flat image. */
 function imageSpread(ffmpeg: string, file: string, signal?: AbortSignal): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -128,6 +153,47 @@ export function visualVarietyFindings(images: Production['assets'], sceneCount: 
   return out;
 }
 
+/** RMS level (dB) of a stretch of the final mix. */
+async function rmsDb(ffmpeg: string, file: string, start: number, dur: number, signal?: AbortSignal): Promise<number> {
+  const out = await runFfmpegCapture(ffmpeg, ['-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', file, '-vn', '-af', 'astats=measure_perchannel=none:measure_overall=RMS_level', '-f', 'null', '-'], signal);
+  const m = /RMS level dB:\s*(-?[\d.]+|-inf)/.exec(out);
+  return !m || m[1] === '-inf' ? -120 : Number(m[1]);
+}
+
+/**
+ * Soundtrack checks on the rendered file: music must stay well under the voice (never obscure it) yet be audible,
+ * and the video must end on a fade rather than a cut. Measured on the real mix, scene by scene.
+ */
+export async function soundtrackFindings(ctx: QaContext, file: string, durationSec: number): Promise<QaCheckResult[]> {
+  const out: QaCheckResult[] = [];
+  const p = ctx.production;
+  const narr = p.assets.filter((a) => a.kind === 'narration').sort((a, b) => (a.sceneIndex ?? 0) - (b.sceneIndex ?? 0));
+  const music = p.assets.some((a) => a.kind === 'music');
+  const tail = await rmsDb(ctx.ffmpeg, file, Math.max(0, durationSec - 0.12), 0.12, ctx.signal);
+  out.push(finding('audio.ending', 'audio', 'minor', tail <= -35, `Last 0.12 s at ${tail.toFixed(0)} dB (${tail <= -35 ? 'fades out' : 'ends abruptly'}).`, { tailDb: tail }, 'rerender'));
+  if (!music || !narr.length) return out;
+  const voice: number[] = [];
+  const bed: number[] = [];
+  let offset = 0;
+  for (const a of narr) {
+    const speech = Number(a.meta.durationSec ?? 0);
+    const scene = Math.max(1, Math.round((speech + 0.35) * 30)) / 30;
+    if (speech > 1.2) voice.push(await rmsDb(ctx.ffmpeg, file, offset + speech / 2 - 0.5, 1, ctx.signal));
+    // The tail of each scene's pause carries only the music (and any transition effect).
+    if (scene - speech > 0.25 && offset + scene < durationSec - 1) bed.push(await rmsDb(ctx.ffmpeg, file, offset + speech + 0.1, Math.min(0.2, scene - speech - 0.12), ctx.signal));
+    offset += scene;
+  }
+  const med = (xs: number[]) => (xs.length ? [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] : NaN);
+  const v = med(voice);
+  const b = med(bed);
+  if (Number.isFinite(v) && Number.isFinite(b)) {
+    const gap = v - b;
+    out.push(finding('audio.balance', 'audio', 'major', gap >= 8, `Voice ${v.toFixed(0)} dB vs music ${b.toFixed(0)} dB between lines: ${gap.toFixed(0)} dB apart (music must sit at least 8 dB under the voice).`, { voiceDb: v, musicDb: b, gapDb: +gap.toFixed(1) }, 'rerender'));
+    out.push(finding('audio.music-audible', 'audio', 'minor', b >= -60, b >= -60 ? 'Music is audible between lines.' : `Music is almost silent (${b.toFixed(0)} dB).`, { musicDb: b }));
+  }
+  return out;
+}
+
 export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   const p = ctx.production;
   const out: QaCheckResult[] = [];
@@ -185,6 +251,7 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   const irrelevant = external.filter((a) => (a.meta.plan ? a.meta.relevant !== true : !isRelevantFile(String(a.meta.key ?? ''), p.topic, '') && !String(a.meta.via ?? '').startsWith('article:')));
   out.push(finding('visuals.relevance', 'visuals', 'major', irrelevant.length === 0, irrelevant.length ? `${irrelevant.length} image(s) do not match the topic or scene: scenes ${irrelevant.map((a) => (a.sceneIndex ?? 0) + 1).join(', ')}.` : 'Every external image matched the topic and scene when it was chosen.', { scenes: irrelevant.map((a) => a.sceneIndex) }, 'revisuals'));
   out.push(...visualVarietyFindings(images, sb?.scenes.length ?? 0, (a) => fs.existsSync(path.join(ctx.dir, a.path))));
+  out.push(...graphicFindings(p));
   for (const a of images) {
     const file = path.join(ctx.dir, a.path);
     if (!fs.existsSync(file)) continue;
@@ -193,6 +260,21 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   }
   const unlabelledAi = images.filter((a) => a.provider === 'comfyui' && !a.meta.aiGenerated);
   out.push(finding('visuals.ai-label', 'visuals', 'critical', unlabelledAi.length === 0, unlabelledAi.length ? 'AI illustration not marked for on-screen labelling.' : 'No unlabelled AI imagery.', {}, 'revisuals'));
+
+  // ---- pronunciation ----------------------------------------------------------------
+  if (ctx.pronunciation) {
+    const unsure = ctx.pronunciation.filter((f) => f.status === 'uncertain');
+    out.push(
+      finding(
+        'narration.pronunciation',
+        'narration',
+        'minor',
+        unsure.length === 0,
+        unsure.length ? `Check how these are said (not in the dictionary): ${unsure.map((f) => `${f.term} (scene ${f.scenes.map((s) => s + 1).join(', ')})`).join('; ')}.` : `All ${ctx.pronunciation.length} names and technical terms are in the dictionary or follow a known rule.`,
+        { uncertain: unsure.map((f) => ({ term: f.term, spoken: f.spoken, scenes: f.scenes })) }
+      )
+    );
+  }
 
   // ---- narration ----------------------------------------------------------------
   const narration = p.assets.filter((a) => a.kind === 'narration').sort((a, b) => (a.sceneIndex ?? 0) - (b.sceneIndex ?? 0));
@@ -263,6 +345,7 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
     const peak = Number(/Peak:\s+(-?[\d.]+) dBFS/.exec(summary)?.[1]);
     out.push(finding('audio.loudness', 'audio', 'major', Number.isFinite(lufs) && lufs >= -19 && lufs <= -13, `Integrated loudness ${Number.isFinite(lufs) ? lufs.toFixed(1) : '?'} LUFS (target −16 ±3).`, { lufs }, 'rerender'));
     out.push(finding('audio.clipping', 'audio', 'major', Number.isFinite(peak) && peak <= -0.5, `True peak ${Number.isFinite(peak) ? peak.toFixed(1) : '?'} dBTP (must stay below −0.5).`, { truePeak: peak }, 'rerender'));
+    out.push(...(await soundtrackFindings(ctx, file, info.durationSec)));
   }
 
   // ---- metadata + destinations -----------------------------------------------------

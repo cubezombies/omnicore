@@ -320,6 +320,14 @@ export class ProductionRepository {
     return this.assets(productionId).find((x) => x.id === Number(res.lastInsertRowid))!;
   }
 
+  /** Delete one kind of asset for some scenes only (e.g. re-voicing the scenes that contain a corrected word). */
+  deleteSceneAssets(productionId: number, kind: AssetKind, scenes: number[]): ProductionAsset[] {
+    const gone = this.assets(productionId, kind).filter((a) => a.sceneIndex !== null && scenes.includes(a.sceneIndex));
+    const del = this.db.prepare('DELETE FROM production_assets WHERE id = ?');
+    for (const a of gone) del.run(a.id);
+    return gone;
+  }
+
   deleteAssets(productionId: number, kind: AssetKind): ProductionAsset[] {
     const gone = this.assets(productionId, kind);
     this.db.prepare('DELETE FROM production_assets WHERE production_id = ? AND kind = ?').run(productionId, kind);

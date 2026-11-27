@@ -22,6 +22,7 @@ import { electronRasterize } from './media/rasterize';
 import { BusinessRepository } from './business/businesses';
 import { TopicRepository } from './business/topics';
 import { BusinessContext } from './business/context';
+import { PronunciationRepository, checkPronunciations, englishWords } from './pronunciation/dictionary';
 import { onAutonomySettingsChanged, registerIpc } from './ipc';
 import { SoundLibrary } from './library';
 import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath, resolveSamplePath } from './paths';
@@ -270,6 +271,7 @@ if (!app.requestSingleInstanceLock()) {
     productions.markInterrupted();
     productions.restoreOutputs(productionsDir);
     const ops = new OperationsRepository(db);
+    const pronunciations = new PronunciationRepository(db);
     const businesses = new BusinessRepository(db);
     const topics = new TopicRepository(db);
     const business = new BusinessContext(db, businesses);
@@ -284,10 +286,12 @@ if (!app.requestSingleInstanceLock()) {
       providers: (s) => buildProviders(s, dirs),
       library,
       ffmpeg: (s) => resolveFfmpeg(s.ffmpegPath),
+      pronunciations: (bid, engine) => pronunciations.resolved(bid, engine),
+      pronunciationCheck: (p) => (p.storyboard ? checkPronunciations(p.storyboard, pronunciations.list(p.channelId), englishWords(dirs.toolsDir)) : []),
       channel: (id) => {
         // Each production is written with its own business's identity and agent instructions, never another's.
         const c = businesses.get(id);
-        return { name: c.name, niche: c.niche, instructions: c.instructions };
+        return { name: c.name, niche: c.niche, instructions: c.instructions, keywords: topics.discoveryProfile(id).keywords };
       },
       emit: (id) => {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.onProductionChanged, id);
@@ -327,7 +331,7 @@ if (!app.requestSingleInstanceLock()) {
       discover: (_brandId, keywords, recent, signal) => discover(defaultDiscoverySources(), keywords, recent, signal),
       onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
     });
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business });
+    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations });
     registerMediaProtocol(productionsDir, library.dir, samplesDir);
     // Keep every window on the real active business, whoever switched it.
     business.onChange((b) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send(IPC.onBusinessChanged, b.id)));

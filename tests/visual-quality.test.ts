@@ -4,11 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { planScene } from '../src/main/media/visualPlan';
 import { assetRelevance } from '../src/main/media/relevance';
-import { GRAPHIC_MARK, graphicHtml } from '../src/main/media/graphics';
+import { GRAPHIC_MARK, graphicHtml, type GraphicSpec } from '../src/main/media/graphics';
 import { buildRenderArgs, XFADE_SEC } from '../src/main/media/render';
 import { verifyVisualAssets } from '../src/main/media/assetPolicy';
 import { GraphicsVisuals, OpenverseVisuals, openverseLicense, photoQueries } from '../src/main/providers/visuals';
-import { visualVarietyFindings } from '../src/main/qa/engine';
+import { graphicFindings, visualVarietyFindings } from '../src/main/qa/engine';
 import { sceneMotion } from '../src/main/pipeline/runner';
 import { openDatabase } from '../src/main/db/database';
 import { ProductionRepository } from '../src/main/db/productions';
@@ -60,7 +60,7 @@ describe('visual relevance check', () => {
     expect(assetRelevance({ title: "Moore's Law over 120 Years", tags: ['gpu', 'nvidia', 'cpu'] }, gs, 'how GPUs accelerate AI training')).toMatchObject({ ok: false, reason: expect.stringMatching(/title names no specific topic word/) });
     expect(assetRelevance({ title: 'Intelligence Inside: the future of AI and computation', tags: ['gpu'] }, gs, 'how GPUs accelerate AI training').ok).toBe(false);
     expect(assetRelevance({ title: 'GPU lab visit', tags: ['people', 'gpu'] }, gs, 'how GPUs accelerate AI training')).toMatchObject({ ok: false, reason: expect.stringMatching(/people/) });
-    expect(assetRelevance({ title: 'nvidia-tesla-k20-k20x-gpu-accelerators', tags: ['gpu'] }, gs, 'how GPUs accelerate AI training').ok).toBe(true);
+    expect(assetRelevance({ title: 'nvidia-tesla-k20-k20x-gpu-accelerators', tags: ['gpu'] }, gs, 'how GPUs accelerate AI training', { context: ['NVIDIA', 'chip'] }).ok).toBe(true);
     expect(assetRelevance({ title: 'Broken Nvidia GeForce 4 Ti : Broken GPU Chip 3/4' }, gs, 'how GPUs accelerate AI training')).toMatchObject({ ok: false, reason: expect.stringMatching(/damage/) });
     const h100 = { visualQuery: 'GPU cluster', narration: 'Llama 8B models were tuned on eight NVIDIA H100 GPUs.' };
     expect(assetRelevance({ title: 'nVidia NV35 GPU' }, h100, 'how GPUs accelerate AI training')).toMatchObject({ ok: false, reason: expect.stringMatching(/nv35 but the narration is about h100/) });
@@ -175,5 +175,106 @@ describe('settings', () => {
     repo.saveSettings({ ...repo.getSettings(), visuals: ['wikimedia-commons', 'title-card'] });
     expect(repo.getSettings().visuals).toEqual(['wikimedia-commons', 'title-card']); // user removal respected
     db.close();
+  });
+});
+
+describe('timelines, build-up animation and graphic attribution', () => {
+  it('turns dated narration into a timeline using only its own dates and words', () => {
+    const p = planScene(scene({ narration: 'The project began in 2017, and in 2023 it shipped its first open model.' }), brief, sources, 'AI, Actually', null);
+    expect(p.kind).toBe('timeline');
+    expect(p.graphic).toMatchObject({ kind: 'timeline', attribution: 'arXiv' });
+    const ev = (p.graphic as { events: { when: string; what: string }[] }).events;
+    expect(ev.map((e) => e.when)).toEqual(['2017', '2023']);
+    expect(ev[1].what).toMatch(/shipped its first open model/);
+  });
+
+  it('renders build-up frames that reveal one more item each time', async () => {
+    const steps: GraphicSpec = { kind: 'steps', title: 'How it works', steps: ['Draft tokens', 'Verify them', 'Keep the good ones'] };
+    expect((graphicHtml(steps, 0, 1).match(/visibility:hidden/g) ?? []).length).toBe(2);
+    expect(graphicHtml(steps, 0).includes('visibility:hidden')).toBe(false);
+    const dir = tmp();
+    const raster = vi.fn(async (_h: string, out: string) => fs.writeFileSync(out, 'PNG'));
+    const plan = planScene(scene({ narration: 'A small model drafts several tokens, then a larger model verifies them in one pass.' }), brief, sources, 'AI, Actually', null);
+    const r = await new GraphicsVisuals(raster).fetch({ scene: scene({}), brief, sources, sceneCount: 8, outBase: path.join(dir, 's'), usedKeys: new Set(), plan }, AbortSignal.timeout(5000));
+    expect((r!.meta!.frames as string[]).length).toBe(2);
+    expect(raster).toHaveBeenCalledTimes(2); // full frame + first reveal (the last frame reuses the full one)
+  });
+
+  it('builds a multi-frame scene with correct input indexes alongside music and effects', () => {
+    const args = buildRenderArgs({
+      scenes: [
+        { image: 'a.png', audio: 'a.wav', durationSec: 3 },
+        { image: 'b3.png', frames: ['b1.png', 'b2.png', 'b3.png'], audio: 'b.wav', durationSec: 6, transition: 'fade' }
+      ],
+      captions: 'c.ass',
+      output: 'o.mp4',
+      music: { path: 'm.m4a', volume: 0.12 },
+      sfx: { path: 'w.m4a', volume: 0.3, atSec: [2.7] }
+    });
+    const inputs = args.filter((_, i) => args[i - 1] === '-i');
+    expect(inputs).toEqual(['a.png', 'b1.png', 'b2.png', 'b3.png', 'a.wav', 'b.wav', 'm.m4a', 'w.m4a']);
+    const fc = args[args.indexOf('-filter_complex') + 1];
+    expect(fc).toContain('[1:v]scale');
+    expect(fc).toContain('[v1f0][v1f1]xfade=transition=fade:duration=0.2');
+    expect(fc).toContain('[4:a]aresample'); // first narration
+    expect(fc).toContain('[6:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,loudnorm=I=-30'); // music normalised
+    expect(fc).toContain('[7:a]aresample'); // effect
+    expect(fc).toContain('alimiter=limit=0.85');
+  });
+
+  it('flags a graphic that credits a source its scene does not cite', () => {
+    const prod = {
+      storyboard: { scenes: [scene({ index: 0, sourceIds: ['S1'] })] },
+      sources,
+      brief: { ...brief, claims: [] },
+      assets: [
+        { id: 1, productionId: 1, kind: 'image', sceneIndex: 0, path: 'x.png', provider: 'graphics', sourceUrl: '', license: '', attribution: '', meta: { creditedTo: 'The Verge' } },
+        { id: 2, productionId: 1, kind: 'narration', sceneIndex: 0, path: 'a.wav', provider: 'x', sourceUrl: '', license: '', attribution: '', meta: { durationSec: 12 } }
+      ]
+    } as never;
+    const f = graphicFindings(prod);
+    expect(f.find((x) => x.checkId === 'visuals.attribution')).toMatchObject({ passed: false, severity: 'major' });
+    expect(f.find((x) => x.checkId === 'visuals.static')).toMatchObject({ passed: false, severity: 'minor' });
+  });
+});
+
+describe('real render of a build-up scene', () => {
+  it('produces a correctly timed 1080x1920 video through FFmpeg', async () => {
+    const { resolveFfmpeg, runFfmpeg, probe } = await import('../src/main/media/ffmpeg');
+    const ff = resolveFfmpeg('');
+    const dir = tmp();
+    const color = ['red', 'green', 'blue', 'white'];
+    for (let i = 0; i < 4; i++) await runFfmpeg(ff, ['-f', 'lavfi', '-i', `color=c=${color[i]}:s=1080x1920:d=1`, '-frames:v', '1', '-update', '1', `f${i}.png`], { cwd: dir });
+    for (const n of ['a', 'b']) await runFfmpeg(ff, ['-f', 'lavfi', '-i', 'sine=f=220:d=2.5', `${n}.wav`], { cwd: dir });
+    await runFfmpeg(ff, ['-f', 'lavfi', '-i', 'sine=f=440:d=4', '-c:a', 'aac', 'm.m4a'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'c.ass'), '[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n');
+    const plan = { scenes: [{ image: 'f0.png', audio: 'a.wav', durationSec: 2.6 }, { image: 'f3.png', frames: ['f1.png', 'f2.png', 'f3.png'], audio: 'b.wav', durationSec: 3.0, transition: 'fade' as const, motion: 'still' as const }], captions: 'c.ass', output: 'out.mp4', music: { path: 'm.m4a', volume: 0.12 } };
+    await runFfmpeg(ff, buildRenderArgs(plan), { cwd: dir });
+    const info = await probe(ff, path.join(dir, 'out.mp4'));
+    expect(info.video).toMatchObject({ width: 1080, height: 1920 });
+    expect(Math.abs(info.durationSec - 5.6)).toBeLessThan(0.1);
+  }, 120_000);
+});
+
+describe('acceptance-video regressions', () => {
+  it('rejects images that only match a framing word like "history", and treats a photo series as one image', async () => {
+    const { seriesKey } = await import('../src/main/media/relevance');
+    const sc = { visualQuery: 'GPU history', narration: 'GPUs have become essential for AI.' };
+    expect(assetRelevance({ title: 'File:Guns on Deck, History is Made (6372966).jpg' }, sc, 'the history of GPUs in artificial intelligence').ok).toBe(false);
+    expect(assetRelevance({ title: 'File:NVIDIA GeForce 256 GPU.jpg' }, sc, 'the history of GPUs in artificial intelligence', { context: ['NVIDIA'] }).ok).toBe(true);
+    expect(seriesKey('File:Guns on Deck, History is Made (6372966).jpg')).toBe(seriesKey('File:Guns on Deck, History is Made (6372950).jpg'));
+    expect(seriesKey('File:NVIDIA H100.jpg')).not.toBe(seriesKey('File:NVIDIA A100.jpg') + 'x');
+  });
+});
+
+describe('acronym disambiguation', () => {
+  const sc = { visualQuery: 'GPU history', narration: 'GPUs have become essential for AI.' };
+  const topic = 'the history of GPUs in artificial intelligence';
+  it('rejects an image that only shares an ambiguous acronym', () => {
+    expect(assetRelevance({ title: 'File:Red Army GPU Novosibirsk Berlin - History Foundation Photography.jpg' }, sc, topic, { context: ['GPU', 'chip', 'NVIDIA', 'accelerator'] })).toMatchObject({ ok: false, reason: expect.stringMatching(/only the acronym/) });
+  });
+  it('accepts it when the business context confirms the meaning', () => {
+    expect(assetRelevance({ title: 'File:NVIDIA GeForce 256 GPU.jpg' }, sc, topic, { context: ['GPU', 'chip', 'NVIDIA', 'accelerator'] }).ok).toBe(true);
+    expect(assetRelevance({ title: 'File:NVIDIA GeForce 256 GPU.jpg' }, sc, topic).ok).toBe(false); // without context it can't be confirmed
   });
 });

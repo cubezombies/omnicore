@@ -43,7 +43,6 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
   const [installing, setInstalling] = useState(false);
   const [sampling, setSampling] = useState(false);
   const [sample, setSample] = useState<VoiceSample | null>(null);
-  const [pronText, setPronText] = useState('');
 
   const check = () => {
     setChecking(true);
@@ -56,7 +55,6 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void window.api.getSettings().then((x) => {
       setS(x);
-      setPronText(x.pronunciations.map((p) => `${p.term} = ${p.say}`).join('\n'));
     });
     void window.api.listSounds().then(setTracks);
     check();
@@ -263,18 +261,7 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
             <span>Speech rate ({s.speechRate})</span>
             <input type="range" min={-5} max={5} step={1} value={s.speechRate} onChange={(e) => set('speechRate', Number(e.target.value))} />
           </label>
-          <label className="field">
-            <span>Pronunciations (one per line: TERM = how to say it)</span>
-            <textarea
-              rows={3}
-              value={pronText}
-              placeholder={'Omnicore = omni core\nKokoro = koh-koh-roh'}
-              onChange={(e) => {
-                setPronText(e.target.value);
-                set('pronunciations', parsePronunciations(e.target.value));
-              }}
-            />
-          </label>
+          <p className="muted small">Pronunciations are managed in the Pronunciation page (per business, with auditions).</p>
           <div className="install-row">
             <button className="secondary" disabled={sampling} onClick={playSample} title="Save providers first so the sample uses these settings">
               {sampling ? 'Generating…' : 'Generate voice sample'}

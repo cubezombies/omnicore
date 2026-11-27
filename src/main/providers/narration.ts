@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ProviderStatus } from '../../shared/production';
+import type { Pronunciation, ProviderStatus } from '../../shared/production';
+import { speechTokens, spokenText, type SpeechToken } from './pronunciation';
 import type { WordTiming } from '../media/captions';
 import { CancelledError } from '../media/ffmpeg';
 import { wavDurationSec } from '../media/wav';
@@ -43,6 +44,39 @@ interface RawWord {
 }
 
 /** Turn SAPI progress events into word timings (dedupe repeated multi-part tokens, derive end times). */
+/**
+ * Map SAPI's word events (character offsets in the respelled text) back onto the original words, so captions
+ * show what was written ("NVIDIA"), never the respelling ("Envidia"). Words without an event are interpolated.
+ */
+export function timingsForTokens(tokens: SpeechToken[], raw: RawWord[], durationSec: number): WordTiming[] {
+  const events = [...raw].sort((a, b) => a.ms - b.ms);
+  let offset = 0;
+  const starts = tokens.map((t) => {
+    const s = offset;
+    offset += t.spoken.length + 1;
+    return s;
+  });
+  const out: { text: string; start: number | null }[] = tokens.map((t, i) => {
+    const end = starts[i] + t.spoken.length;
+    const ev = events.find((e) => e.c >= starts[i] && e.c < end);
+    return { text: t.orig, start: ev ? ev.ms / 1000 : null };
+  });
+  // Interpolate missing starts between known neighbours.
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].start !== null) continue;
+    const prev = [...out.slice(0, i)].reverse().find((x) => x.start !== null)?.start ?? 0;
+    const j = out.findIndex((x, k) => k > i && x.start !== null);
+    const next = j >= 0 ? (out[j].start as number) : durationSec;
+    const span = j >= 0 ? j - i + 1 : out.length - i + 1;
+    out[i].start = prev + (next - prev) / span;
+  }
+  return out.map((w, i) => {
+    const start = w.start as number;
+    const next = i + 1 < out.length ? (out[i + 1].start as number) : durationSec;
+    return { text: w.text, start, end: Math.max(start + 0.1, Math.min(next, start + 1.2, durationSec)) };
+  });
+}
+
 export function toWordTimings(raw: RawWord[], durationSec: number): WordTiming[] {
   const seen = new Set<number>();
   const uniq = raw.filter((w) => (seen.has(w.c) ? false : (seen.add(w.c), true))).sort((a, b) => a.ms - b.ms);
@@ -59,7 +93,12 @@ export class SapiNarration implements NarrationProvider {
   costPerUnitUsd = 0;
   private scriptPath: string;
 
-  constructor(private readonly tmpDir: string, private readonly voice: string, private readonly rate: number) {
+  constructor(
+    private readonly tmpDir: string,
+    private readonly voice: string,
+    private readonly rate: number,
+    private readonly pronunciations: Pronunciation[] = []
+  ) {
     this.scriptPath = path.join(tmpDir, 'omnicore-sapi.ps1');
   }
 
@@ -110,7 +149,9 @@ export class SapiNarration implements NarrationProvider {
 
   async synthesize(text: string, outWav: string, signal: AbortSignal): Promise<NarrationResult> {
     const textFile = `${outWav}.txt`;
-    fs.writeFileSync(textFile, text, 'utf8');
+    // The engine reads the respelled text; captions keep the original words (timings are mapped back below).
+    const tokens = speechTokens(text, this.pronunciations);
+    fs.writeFileSync(textFile, spokenText(tokens), 'utf8');
     try {
       const args = ['-Mode', 'speak', '-TextFile', textFile, '-OutFile', outWav, '-Rate', String(Math.round(this.rate))];
       if (this.voice) args.push('-Voice', this.voice);
@@ -119,7 +160,7 @@ export class SapiNarration implements NarrationProvider {
       const raw = parsed.words ? (Array.isArray(parsed.words) ? parsed.words : [parsed.words]) : [];
       const durationSec = wavDurationSec(outWav);
       if (durationSec < 0.2) throw new Error('Windows speech produced an empty recording.');
-      return { durationSec, words: toWordTimings(raw, durationSec), voice: parsed.voice };
+      return { durationSec, words: timingsForTokens(tokens, raw, durationSec), voice: parsed.voice };
     } finally {
       fs.rmSync(textFile, { force: true });
     }

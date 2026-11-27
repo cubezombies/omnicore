@@ -299,3 +299,11 @@ nav { gap: var(--s4); }
 .topic-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3) var(--s4); }
 .topic-form-grid .wide { grid-column: 1 / -1; }
 .small-btn.danger { color: var(--danger); }
+
+/* Pronunciation */
+.pron-form { max-width: 900px; }
+.pron-filter { max-width: 320px; }
+.pron-table td { vertical-align: top; }
+.pron-actions { text-align: right; white-space: nowrap; }
+.pill.warn { border-color: #f59e0b; color: #fbbf24; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

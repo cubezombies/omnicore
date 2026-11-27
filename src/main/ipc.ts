@@ -24,6 +24,8 @@ import { VOICE_SAMPLE_TEXT, sampleUrl } from '../shared/production';
 import { VoicePreviews, previewNarrator, previewStyle } from './providers/voicePreview';
 import type { BusinessRepository } from './business/businesses';
 import type { TopicRepository } from './business/topics';
+import { checkPronunciations, englishWords, type PronunciationRepository } from './pronunciation/dictionary';
+import type { PreviewEngine } from '../shared/production';
 import { BusinessContextError, type BusinessContext, type OwnedKind } from './business/context';
 import * as v from './validation';
 
@@ -46,17 +48,29 @@ export interface IpcDeps {
   businesses: BusinessRepository;
   topics: TopicRepository;
   business: BusinessContext;
+  pronunciations: PronunciationRepository;
 }
 
 /**
  * Register every IPC handler. Each one checks the sender is our own top frame
  * and validates its arguments before touching the database or filesystem.
  */
-export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business }: IpcDeps): void {
+export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations }: IpcDeps): void {
   const previews = new VoicePreviews(samplesDir, previewNarrator(() => productions.getSettings(), dirs), () => previewStyle(productions.getSettings()));
   // Every business-owned request is checked against the active business (held here, in the main process) and
   // against the owner of the record it touches. Missing or invalid context throws; nothing falls back to another business.
   const cur = () => business.activeId();
+  /** The engine and voice that narrate for a business (its presenter, else the global narration settings). */
+  const presenterVoice = (bid: number): { engine: PreviewEngine; voice: string } => {
+    const s = productions.getSettings();
+    const pres = ops.brandPresenter(bid);
+    if (pres.engine === 'sherpa') return { engine: 'sherpa', voice: pres.voice };
+    if (pres.engine === 'windows-sapi' && pres.voice) return { engine: 'windows-sapi', voice: pres.voice };
+    if (s.narration === 'sherpa') return { engine: 'sherpa', voice: s.sherpaVoice };
+    if (s.narration === 'piper') return { engine: 'piper', voice: s.piperVoice };
+    if (!s.voice) throw new Error('Choose a specific Windows voice (or a Kokoro presenter) to audition pronunciations.');
+    return { engine: 'windows-sapi', voice: s.voice };
+  };
   const own = (kind: OwnedKind, id: unknown) => business.own(kind, v.id(id));
   const handlers: Record<InvokeKey, Handler> = {
     // ---- businesses -----------------------------------------------------------------
@@ -145,8 +159,8 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
         own('content', np.contentId);
         notes = repo.getContent(np.contentId)!.researchNotes;
       }
-      const p = productions.create(cid, np.topic, np.contentId ?? null, notes, np.mode ?? 'explainer', { destinations: ops.resolveDestinations(cid), format: np.format ?? 'short' });
-      audit.record({ actor: 'user', type: 'production.created', productionId: p.id, data: { topic: np.topic, mode: np.mode ?? 'explainer', format: np.format ?? 'short', destinations: p.destinations } });
+      const p = productions.create(cid, np.topic, np.contentId ?? null, notes, np.mode ?? 'explainer', { destinations: ops.resolveDestinations(cid), format: np.format ?? 'standard' });
+      audit.record({ actor: 'user', type: 'production.created', productionId: p.id, data: { topic: np.topic, mode: np.mode ?? 'explainer', format: np.format ?? 'standard', destinations: p.destinations } });
       runner.enqueue(p.id);
       return productions.get(p.id);
     },
@@ -308,6 +322,33 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       return publisher.publish(pid, pl, 'user', undefined, pl === 'tiktok' ? v.tiktokPost(tiktok) : undefined);
     },
     tiktokCreatorInfo: (id) => publisher.tiktokCreatorInfo(own('production', id)),
+
+    // ---- pronunciation dictionary (shared entries + the active business's own) ---------------
+    listPronunciations: () => pronunciations.list(cur()),
+    savePronunciation: (draft) => {
+      const bid = cur();
+      const e = pronunciations.save(bid, v.pronunciationDraft(draft));
+      audit.record({ actor: 'user', businessId: bid, type: 'pronunciation.saved', subjectType: 'pronunciation', subjectId: e.id, data: { term: e.term, say: e.say, engineSay: e.engineSay, scope: e.businessId === null ? 'global' : 'business' } });
+      return e;
+    },
+    deletePronunciation: (id) => {
+      const bid = cur();
+      const e = pronunciations.delete(bid, v.id(id));
+      audit.record({ actor: 'user', businessId: bid, type: 'pronunciation.deleted', subjectType: 'pronunciation', subjectId: e.id, data: { term: e.term, scope: e.businessId === null ? 'global' : 'business' } });
+    },
+    pronunciationReport: (id) => {
+      const p = productions.get(own('production', id));
+      return p.storyboard ? checkPronunciations(p.storyboard, pronunciations.list(p.channelId), englishWords(dirs.toolsDir)) : [];
+    },
+    auditionPronunciation: (req) => {
+      const bid = cur();
+      const r = v.audition(req);
+      const voice = presenterVoice(bid);
+      // The business's dictionary, with the draft correction (if any) applied on top, spoken by its presenter.
+      const base = pronunciations.resolved(bid, voice.engine).filter((x) => !r.term || x.term.toLowerCase() !== r.term.toLowerCase());
+      return previews.preview(voice.engine, voice.voice, AbortSignal.timeout(180_000), { text: r.text, pronunciations: r.term && r.say ? [...base, { term: r.term, say: r.say }] : base });
+    },
+    revoiceScenes: (id, scenes) => runner.renarrateScenes(own('production', id), v.idList(scenes).map((n) => n)),
 
     // ---- sound library: licensed assets shared by all businesses (core) ------------------
     listSounds: () => library.list(),

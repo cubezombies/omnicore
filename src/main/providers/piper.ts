@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PIPER_VOICES, type PiperVoiceId, type ProviderStatus } from '../../shared/production';
+import { PIPER_VOICES, type PiperVoiceId, type Pronunciation, type ProviderStatus } from '../../shared/production';
+import { speechTokens, spokenText } from './pronunciation';
 import type { WordTiming } from '../media/captions';
 import { CancelledError } from '../media/ffmpeg';
 import { concatWavs } from '../media/wav';
@@ -76,7 +77,8 @@ export class PiperNarration implements NarrationProvider {
     private readonly piperExe: string,
     private readonly voice: string,
     private readonly tmpDir: string,
-    private readonly speechRate = 0
+    private readonly speechRate = 0,
+    private readonly pronunciations: Pronunciation[] = []
   ) {}
 
   private resolveVoice(): string {
@@ -117,7 +119,8 @@ export class PiperNarration implements NarrationProvider {
     const partsDir = `${outWav}.parts`;
     fs.mkdirSync(partsDir, { recursive: true });
     const parts = sentences.map((_, i) => path.join(partsDir, `${i}.wav`));
-    const lines = sentences.map((s, i) => JSON.stringify({ text: s, output_file: parts[i] })).join('\n') + '\n';
+    // Piper reads the respelled text; caption timings are still estimated from the original sentences.
+    const lines = sentences.map((s, i) => JSON.stringify({ text: spokenText(speechTokens(s, this.pronunciations)), output_file: parts[i] })).join('\n') + '\n';
     try {
       await new Promise<void>((resolve, reject) => {
         if (signal.aborted) return reject(new CancelledError());

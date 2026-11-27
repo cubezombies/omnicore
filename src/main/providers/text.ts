@@ -129,7 +129,7 @@ export function buildBrief(topic: string, sources: Source[], channelNiche: strin
 export function extractiveStoryboard(brief: Brief, channelName: string): Storyboard {
   const display = titleCase(brief.topic);
   const scenes: Scene[] = [
-    { index: 0, role: 'hook', narration: `Let's talk about ${brief.topic}, in under a minute.`, onScreenText: display, visualQuery: brief.topic, sourceIds: [] },
+    { index: 0, role: 'hook', narration: brief.format === 'standard' ? `Let's look at ${brief.topic}, and what the sources actually say.` : `Let's talk about ${brief.topic}, in under a minute.`, onScreenText: display, visualQuery: brief.topic, sourceIds: [] },
     ...brief.keyFacts.map(
       (f, i): Scene => ({
         index: i + 1,

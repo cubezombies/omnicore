@@ -52,6 +52,10 @@ export interface VisualRequest {
   outBase: string;
   /** Keys of assets already used in this production (avoid repeats). */
   usedKeys: Set<string>;
+  /** Titles of images already used (to avoid near-duplicates from one photo series). */
+  usedTitles?: Set<string>;
+  /** The business's own topic keywords, used to disambiguate image matches (never sent anywhere). */
+  contextTerms?: string[];
   /** Scene visual plan (0.6.1+): what this scene should show and why. */
   plan?: import('../media/visualPlan').VisualPlan;
 }

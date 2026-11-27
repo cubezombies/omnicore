@@ -28,7 +28,7 @@ export class ExtractiveWriter implements Writer {
 export function claimStoryboard(brief: Brief, channelName: string): Storyboard {
   const claims = brief.claims ?? [];
   const display = titleCase(brief.topic);
-  const hook = brief.mode === 'news' ? `Here's what's new with ${brief.topic}, and what's actually confirmed.` : `Let's talk about ${brief.topic}, in under a minute.`;
+  const hook = brief.mode === 'news' ? `Here's what's new with ${brief.topic}, and what's actually confirmed.` : brief.format === 'standard' ? `Let's look at ${brief.topic}, and what the sources actually say.` : `Let's talk about ${brief.topic}, in under a minute.`;
   const scenes: Scene[] = [
     { index: 0, role: 'hook', narration: hook, onScreenText: display, visualQuery: brief.topic, sourceIds: [], claimIds: [] },
     ...claims.map((c, i): Scene => ({
@@ -118,8 +118,8 @@ export function lengthProblem(sb: Storyboard, maxWords = MAX_SCRIPT_WORDS, minWo
 export function wordBudget(format: ProductionFormat, wordsPerSec: number): { minWords: number; maxWords: number } {
   if (format === 'short') return { minWords: 0, maxWords: maxWordsForVoice(wordsPerSec) };
   const wps = wordsPerSec && Number.isFinite(wordsPerSec) ? wordsPerSec : 2.3;
-  // Scene padding and sentence pauses add ~10-15 % to spoken time; aim for ~66-100 s of speech.
-  return { minWords: Math.round(wps * 66), maxWords: Math.max(180, Math.min(300, Math.round(wps * 100))) };
+  // About a minute by default: ~61-70 s of speech, which scene pauses bring to roughly 65-75 s (just over the one-minute mark).
+  return { minWords: Math.round(wps * 61), maxWords: Math.max(140, Math.min(200, Math.round(wps * 70))) };
 }
 
 /** Word ceiling that keeps a short under ~58 s at the voice's natural speed (never speeding the voice up). */
@@ -145,7 +145,7 @@ export function buildMessages(input: { brief: Brief; sources: Source[]; channelN
   const system = [
     `You are the head writer of "${input.channelName}", a faceless short-form video channel about ${input.brief.audience.replace(/^Short-form viewers interested in /, '') || 'technology'}.`,
     format === 'standard'
-      ? 'You write original, high-retention scripts for 65-120 second vertical videos (TikTok, YouTube Shorts, Reels): deeper than a short, with context and why it matters, but every extra second must earn its place.'
+      ? 'You write original, high-retention scripts for vertical videos of about one minute (65-75 seconds) (TikTok, YouTube Shorts, Reels): deeper than a short, with context and why it matters, but every extra second must earn its place.'
       : 'You write tight, original, high-retention scripts for 45-60 second vertical videos (TikTok, YouTube Shorts, Reels).',
     'Hard rules, never broken:',
     '1. Every factual statement must come from the SOURCES you are given. Do not use outside knowledge.',

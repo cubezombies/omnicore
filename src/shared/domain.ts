@@ -9,6 +9,9 @@ import type {
   VoiceSample,
   PreviewEngine,
   VoicePreview,
+  PronunciationDraft,
+  PronunciationEntry,
+  PronunciationFinding,
   SoundGeneratorId,
   NewProduction,
   Production,
@@ -110,6 +113,16 @@ export interface AppApi {
   restoreTopic(id: number): Promise<Topic>;
   deleteTopic(id: number): Promise<void>;
   decideTopicProposal(id: number, accept: boolean): Promise<Topic | null>;
+  /** Shared dictionary entries plus the active business's own. */
+  listPronunciations(): Promise<PronunciationEntry[]>;
+  savePronunciation(draft: PronunciationDraft): Promise<PronunciationEntry>;
+  deletePronunciation(id: number): Promise<void>;
+  /** Names and technical terms in a production's script and how each will be said. */
+  pronunciationReport(productionId: number): Promise<PronunciationFinding[]>;
+  /** Speak a word or sentence with the business's presenter, optionally with a draft correction applied. */
+  auditionPronunciation(req: { text: string; term?: string; say?: string }): Promise<VoicePreview>;
+  /** Re-voice only these scenes, then rebuild captions, render and QA. */
+  revoiceScenes(productionId: number, scenes: number[]): Promise<void>;
   listContent(channelId: number, stages?: Stage[]): Promise<ContentItem[]>;
   getContent(id: number): Promise<ContentItem | null>;
   createContent(channelId: number, draft: ContentDraft): Promise<ContentItem>;
@@ -207,6 +220,12 @@ export const IPC = {
   restoreTopic: 'topics:restore',
   deleteTopic: 'topics:delete',
   decideTopicProposal: 'topics:decide',
+  listPronunciations: 'pron:list',
+  savePronunciation: 'pron:save',
+  deletePronunciation: 'pron:delete',
+  pronunciationReport: 'pron:report',
+  auditionPronunciation: 'pron:audition',
+  revoiceScenes: 'productions:revoice',
   listContent: 'content:list',
   getContent: 'content:get',
   createContent: 'content:create',

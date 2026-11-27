@@ -28,7 +28,7 @@ import { effectiveWordsPerSec } from '../providers/registry';
 import { planScene, type VisualKind } from '../media/visualPlan';
 import { wordBudget } from '../providers/writers';
 import type { PlatformMetadata } from '../../shared/operations';
-import { PRODUCTION_FORMATS, type KokoroVoiceId } from '../../shared/production';
+import { PRODUCTION_FORMATS, type KokoroVoiceId, type PreviewEngine, type Production, type Pronunciation, type PronunciationFinding } from '../../shared/production';
 import { runResearch, type EngineOptions } from '../research/engine';
 import type { RawSource } from '../research/dedupe';
 import { CLAIM_KIND_LABELS, SOURCE_KIND_LABELS } from '../../shared/production';
@@ -39,7 +39,7 @@ export interface RunnerDeps {
   settings: () => ProviderSettings;
   providers: (s: ProviderSettings) => Providers;
   ffmpeg: (s: ProviderSettings) => string;
-  channel: (channelId: number) => { name: string; niche: string; instructions?: string };
+  channel: (channelId: number) => { name: string; niche: string; instructions?: string; keywords?: string[] };
   emit: (productionId: number) => void;
   /** Music & Sound Library (optional: without it, renders have narration only). */
   library?: SoundLibrary;
@@ -51,6 +51,10 @@ export interface RunnerDeps {
   asr?: Transcriber;
   /** Test seam for research article fetching. */
   fetchPage?: EngineOptions['fetchPage'];
+  /** The business's resolved pronunciation dictionary for an engine (0.7). */
+  pronunciations?: (businessId: number, engine: PreviewEngine) => Pronunciation[];
+  /** Terms in a script whose pronunciation nobody has confirmed (0.7). */
+  pronunciationCheck?: (p: Production) => PronunciationFinding[];
   /** Test seam: replaces the FFmpeg render call. */
   render?: (args: string[], cwd: string, signal: AbortSignal, onProgress: (f: number) => void, totalSec: number) => Promise<void>;
 }
@@ -153,6 +157,25 @@ export class ProductionRunner {
     if (startIdx <= PRODUCTION_STEPS.indexOf('script')) this.d.repo.update(id, { storyboard: null });
     // Only a re-render replaces the video; re-running QA keeps the finished file linked.
     if (startIdx <= PRODUCTION_STEPS.indexOf('render')) this.d.repo.update(id, { outputPath: null, durationSec: null });
+    this.enqueue(id);
+  }
+
+  /**
+   * Re-voice only the scenes that contain a corrected word, then rebuild captions, render and QA. Visuals,
+   * script and the other scenes' narration are kept, so the rest of the video is not regenerated.
+   */
+  renarrateScenes(id: number, scenes: number[]): void {
+    const p = this.d.repo.get(id);
+    if (p.status === 'running' || p.status === 'queued') throw new Error('This production is already running or queued.');
+    if (!p.storyboard) throw new Error('This production has no script yet.');
+    const valid = [...new Set(scenes)].filter((i) => p.storyboard!.scenes.some((s) => s.index === i));
+    if (!valid.length) throw new Error('None of those scenes exist in this production.');
+    const dir = this.dirFor(id);
+    for (const a of this.d.repo.deleteSceneAssets(id, 'narration', valid)) fs.rmSync(path.join(dir, a.path), { force: true });
+    for (const step of ['narration', 'captions', 'render', 'qa'] as const) this.d.repo.resetStep(id, step);
+    for (const kind of [...(STEP_ASSETS.captions ?? []), ...(STEP_ASSETS.render ?? [])]) this.removeAssets(id, kind);
+    this.d.repo.update(id, { outputPath: null, durationSec: null });
+    this.audit({ type: 'narration.revoice', productionId: id, data: { scenes: valid.map((i) => i + 1) } });
     this.enqueue(id);
   }
 
@@ -394,8 +417,11 @@ export class ProductionRunner {
       fs.mkdirSync(path.join(c.dir, 'images'), { recursive: true });
       const existing = this.d.repo.assets(c.id, 'image');
       const used = new Set(existing.map((a) => String(a.meta.key ?? '')));
+      const usedTitles = new Set(existing.map((a) => String(a.attribution.match(/^"([^"]+)"/)?.[1] ?? '')).filter(Boolean));
       const scenes = p.storyboard.scenes;
-      const channelName = this.d.channel(p.channelId).name;
+      const channelInfo = this.d.channel(p.channelId);
+      const channelName = channelInfo.name;
+      const contextTerms = [...(channelInfo.keywords ?? []), channelInfo.niche].filter(Boolean);
       const PHOTO = new Set(['wikimedia-commons', 'openverse', 'comfyui']);
       let prev: VisualKind | null = null;
       for (const sc of scenes) {
@@ -416,7 +442,7 @@ export class ProductionRunner {
         for (const v of order) {
           try {
             const r = await v.fetch(
-              { scene: sc, brief: p.brief, sources: p.sources, sceneCount: scenes.length, outBase: path.join(c.dir, 'images', `scene-${pad2(sc.index)}`), usedKeys: used, plan },
+              { scene: sc, brief: p.brief, sources: p.sources, sceneCount: scenes.length, outBase: path.join(c.dir, 'images', `scene-${pad2(sc.index)}`), usedKeys: used, usedTitles, contextTerms, plan },
               c.signal
             );
             if (!r) {
@@ -425,6 +451,8 @@ export class ProductionRunner {
             }
             c.cost(v.costPerUnitUsd);
             used.add(r.key);
+            const t = r.attribution.match(/^"([^"]+)"/)?.[1];
+            if (t) usedTitles.add(t);
             const visualKind: VisualKind | 'title-card' = v.id === 'graphics' ? plan.graphic.kind : PHOTO.has(v.id) ? 'photo' : 'title-card';
             const lic = r.meta?.licenseRecord as Record<string, unknown> | undefined;
             const evidenceHash = lic ? this.retain('licence-record', JSON.stringify({ key: r.key, ...lic }), r.sourceUrl) : undefined;
@@ -438,7 +466,7 @@ export class ProductionRunner {
               sourceUrl: r.sourceUrl,
               license: r.license,
               attribution: r.attribution,
-              meta: { ...r.meta, key: r.key, sha256: fileHash, visualKind, plan: plan.kind, planReason: plan.reason, ...(evidenceHash ? { evidenceHash } : {}) }
+              meta: { ...r.meta, ...(Array.isArray(r.meta?.frames) ? { frames: (r.meta.frames as string[]).map((f) => path.relative(c.dir, f).split(path.sep).join('/')) } : {}), key: r.key, sha256: fileHash, visualKind, plan: plan.kind, planReason: plan.reason, ...(evidenceHash ? { evidenceHash } : {}) }
             });
             prev = visualKind === 'title-card' ? 'title' : visualKind;
             done = true;
@@ -486,7 +514,7 @@ export class ProductionRunner {
         scenes: timeline.map((t, i) => {
           const img = images.find((a) => a.sceneIndex === i);
           if (!img) throw new Error(`Scene ${i + 1} has no visual. Re-run Visuals.`);
-          return { image: img.path, audio: t.audio, durationSec: t.duration, ...sceneMotion(images, i) };
+          return { image: img.path, audio: t.audio, durationSec: t.duration, ...sceneMotion(images, i), ...(Array.isArray(img.meta.frames) && img.meta.frames.length > 1 ? { frames: img.meta.frames as string[] } : {}) };
         }),
         captions: 'captions.ass',
         output: 'render.tmp.mp4'
@@ -496,7 +524,13 @@ export class ProductionRunner {
       this.removeAssets(c.id, 'sfx');
       if (this.d.library && (c.settings.musicMode !== 'none' || c.settings.sfxTransitions)) {
         const lib = this.d.library;
-        const { music, sfx } = await lib.pick(c.settings, c.id, c.signal, this.d.repo.get(c.id).mode === 'news' ? 'upbeat' : 'calm');
+        // Mood follows the content and its pace: news or brisk narration gets the upbeat bed, explainers the calm one.
+        const narr = this.d.repo.assets(c.id, 'narration');
+        const words = p.storyboard.scenes.reduce((s, sc) => s + sc.narration.split(/\s+/).filter(Boolean).length, 0);
+        const secs = narr.reduce((s, a) => s + Number(a.meta.durationSec ?? 0), 0);
+        const pace = secs > 0 ? words / secs : 0;
+        const mood = this.d.repo.get(c.id).mode === 'news' || pace > 2.6 ? 'upbeat' : 'calm';
+        const { music, sfx } = await lib.pick(c.settings, c.id, c.signal, mood);
         if (music) plan.music = { path: lib.pathOf(music), volume: c.settings.musicVolume };
         if (sfx) plan.sfx = { path: lib.pathOf(sfx), volume: c.settings.sfxVolume, atSec: transitionTimes(plan) };
         for (const t of [music, sfx]) {
@@ -558,7 +592,7 @@ export class ProductionRunner {
         this.refreshPublishing(c);
         c.progress(Math.min(0.9, round * 0.3), `QA round ${round}: inspecting…`);
         const p = this.d.repo.get(c.id);
-        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal });
+        const results = await runQaChecks({ production: p, dir: c.dir, ffmpeg: this.d.ffmpeg(c.settings), allowShareAlike: c.settings.allowShareAlike, asr: this.d.asr, signal: c.signal, pronunciation: this.d.pronunciationCheck?.(p) });
         const sum = summarise(results);
         const repairs = [...new Set(results.filter((r) => !r.passed && r.repairAction && (r.severity === 'critical' || r.severity === 'major')).map((r) => r.repairAction!))];
         const canRepair = repairs.length > 0 && round <= maxRounds;
@@ -588,9 +622,9 @@ export class ProductionRunner {
     const s = this.d.settings();
     if (!this.d.ops) return s;
     const pres = this.d.ops.brandPresenter(channelId);
-    if (pres.engine === 'sherpa') return { ...s, narration: 'sherpa', sherpaVoice: pres.voice as KokoroVoiceId };
-    if (pres.engine === 'windows-sapi') return { ...s, narration: 'windows-sapi', voice: pres.voice };
-    return s;
+    const b: ProviderSettings = pres.engine === 'sherpa' ? { ...s, narration: 'sherpa', sherpaVoice: pres.voice as KokoroVoiceId } : pres.engine === 'windows-sapi' ? { ...s, narration: 'windows-sapi', voice: pres.voice } : s;
+    // Each business narrates with its own dictionary (plus shared entries), resolved for the engine actually speaking.
+    return this.d.pronunciations ? { ...b, pronunciations: this.d.pronunciations(channelId, b.narration) } : b;
   }
 
   private audit(e: { type: string; productionId?: number; subjectType?: string; subjectId?: string; data?: Record<string, unknown> }): void {

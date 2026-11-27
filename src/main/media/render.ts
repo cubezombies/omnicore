@@ -5,6 +5,16 @@ export const VIDEO_H = 1920;
 export const FPS = 30;
 /** Silence after each scene's narration so cuts don't feel rushed. */
 export const SCENE_PAD_SEC = 0.35;
+/** Music is normalised to this loudness before mixing (narration is -16 LUFS). */
+export const MUSIC_LUFS = -30;
+/** The settings default; other values scale the normalised music relative to it. */
+export const DEFAULT_MUSIC_VOLUME = 0.12;
+export const MUSIC_FADE_IN_SEC = 1.2;
+export const MUSIC_FADE_OUT_SEC = 1.8;
+export const END_FADE_SEC = 0.25;
+const LIMIT = 0.85;
+/** Dissolve between the frames of a build-up animation. */
+export const BUILD_FADE_SEC = 0.2;
 
 export type Motion = 'in' | 'out' | 'left' | 'right' | 'still';
 export type Transition = 'fade' | 'smoothleft' | 'smoothup' | 'slideleft' | 'circleopen';
@@ -19,6 +29,8 @@ export interface RenderScene {
   motion?: Motion;
   /** Transition INTO this scene from the previous one (ignored for the first scene; default: hard cut). */
   transition?: Transition;
+  /** Build-up animation: these images are shown in turn across the scene (each one reveals a little more). */
+  frames?: string[];
 }
 
 export interface RenderPlan {
@@ -50,12 +62,21 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   if (!p.scenes.length) throw new Error('Nothing to render: no scenes.');
   const n = p.scenes.length;
   const args: string[] = [];
-  for (const s of p.scenes) args.push('-i', s.image);
+  // Inputs: every scene's image(s), then every scene's narration, then music and the transition effect.
+  const sceneInputs: number[][] = [];
+  let next = 0;
+  for (const s of p.scenes) {
+    const imgs = s.frames?.length ? s.frames : [s.image];
+    sceneInputs.push(imgs.map(() => next++));
+    for (const img of imgs) args.push('-i', img);
+  }
+  const audioBase = next;
   for (const s of p.scenes) args.push('-i', s.audio);
+  const musicInput = audioBase + n;
   if (p.music) args.push('-stream_loop', '-1', '-i', p.music.path);
   const sfxTimes = p.sfx?.atSec.filter((t) => t >= 0) ?? [];
   if (p.sfx && sfxTimes.length) args.push('-i', p.sfx.path);
-  const sfxInput = 2 * n + (p.music ? 1 : 0);
+  const sfxInput = musicInput + (p.music ? 1 : 0);
 
   const W2 = Math.round(VIDEO_W * 1.25);
   const H2 = Math.round(VIDEO_H * 1.25);
@@ -78,13 +99,34 @@ export function buildRenderArgs(p: RenderPlan): string[] {
             : motion === 'right'
               ? ['1.12', `(iw-iw/zoom)*on/${frames}`]
               : [`min(1+0.03*on/${frames},1.03)`, cx];
+    const ins = sceneInputs[i];
+    if (ins.length === 1) {
+      f.push(
+        `[${ins[0]}:v]scale=${W2}:${H2}:force_original_aspect_ratio=increase,crop=${W2}:${H2},setsar=1,` +
+          `zoompan=z='${zoom}':x='${x}':y='${cy}':d=${frames}:s=${VIDEO_W}x${VIDEO_H}:fps=${FPS},` +
+          `trim=end_frame=${frames},setpts=PTS-STARTPTS,format=yuv420p[v${i}]`
+      );
+    } else {
+      // Build-up: each frame holds for an equal share of the scene and dissolves into the next.
+      const k = ins.length;
+      const base = Math.floor(frames / k);
+      const seg = (j: number) => (j < k - 1 ? base : frames - base * (k - 1));
+      const fade = Math.round(BUILD_FADE_SEC * FPS);
+      ins.forEach((input, j) => {
+        const len = seg(j) + (j < k - 1 ? fade : 0);
+        f.push(`[${input}:v]scale=${VIDEO_W}:${VIDEO_H}:force_original_aspect_ratio=increase,crop=${VIDEO_W}:${VIDEO_H},setsar=1,loop=loop=${len}:size=1:start=0,fps=${FPS},trim=end_frame=${len},setpts=PTS-STARTPTS,format=yuv420p[v${i}f${j}]`);
+      });
+      let prev = `v${i}f0`;
+      let off = 0;
+      for (let j = 1; j < k; j++) {
+        off += seg(j - 1) / FPS;
+        const out = j === k - 1 ? `v${i}` : `v${i}b${j}`;
+        f.push(`[${prev}][v${i}f${j}]xfade=transition=fade:duration=${BUILD_FADE_SEC}:offset=${off.toFixed(4)}[${out}]`);
+        prev = out;
+      }
+    }
     f.push(
-      `[${i}:v]scale=${W2}:${H2}:force_original_aspect_ratio=increase,crop=${W2}:${H2},setsar=1,` +
-        `zoompan=z='${zoom}':x='${x}':y='${cy}':d=${frames}:s=${VIDEO_W}x${VIDEO_H}:fps=${FPS},` +
-        `trim=end_frame=${frames},setpts=PTS-STARTPTS,format=yuv420p[v${i}]`
-    );
-    f.push(
-      `[${n + i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+      `[${audioBase + i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
         `apad=whole_dur=${s.durationSec.toFixed(4)},atrim=duration=${s.durationSec.toFixed(4)}[a${i}]`
     );
   });
@@ -103,8 +145,16 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   }
   f.push(`[vc]ass=${p.captions},format=yuv420p[vout]`);
   f.push(`[ac]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[narr]`);
+  const total = totalDuration(p);
   if (p.music) {
-    f.push(`[${2 * n}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${p.music.volume.toFixed(3)}[mus]`);
+    // Every track is brought to the same loudness first (about 14 LU under the narration), so the volume setting means
+    // the same thing for every song; then fade in and out, and duck under the voice.
+    const gain = p.music.volume / DEFAULT_MUSIC_VOLUME;
+    const fadeOut = Math.max(0, total - MUSIC_FADE_OUT_SEC);
+    f.push(
+      `[${musicInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,loudnorm=I=${MUSIC_LUFS}:TP=-6:LRA=7,aresample=48000,` +
+        `volume=${gain.toFixed(3)},afade=t=in:st=0:d=${MUSIC_FADE_IN_SEC},afade=t=out:st=${fadeOut.toFixed(3)}:d=${MUSIC_FADE_OUT_SEC}[mus]`
+    );
     f.push(`[narr]asplit=2[n1][n2]`);
     f.push(`[mus][n1]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[duck]`);
     f.push(`[n2][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[bed]`);
@@ -121,12 +171,13 @@ export function buildRenderArgs(p: RenderPlan): string[] {
       const ms = Math.round(t * 1000);
       f.push(`[sx${i}]adelay=${ms}|${ms}[sd${i}]`);
     });
-    f.push(`[bed]${sfxTimes.map((_, i) => `[sd${i}]`).join('')}amix=inputs=${k + 1}:duration=first:dropout_transition=0:normalize=0[aout]`);
+    f.push(`[bed]${sfxTimes.map((_, i) => `[sd${i}]`).join('')}amix=inputs=${k + 1}:duration=first:dropout_transition=0:normalize=0[amix]`);
   } else {
-    f.push(`[bed]anull[aout]`);
+    f.push(`[bed]anull[amix]`);
   }
+  // Safety limiter (no clipping, about -1.4 dBFS ceiling) and a short fade so the video never ends on a cut.
+  f.push(`[amix]alimiter=limit=${LIMIT}:level=false,afade=t=out:st=${Math.max(0, total - END_FADE_SEC).toFixed(3)}:d=${END_FADE_SEC}[aout]`);
 
-  const total = totalDuration(p);
   args.push(
     '-filter_complex', f.join(';'),
     '-map', '[vout]', '-map', '[aout]',

@@ -67,7 +67,7 @@ export function monetizationPrograms(input: { youtube?: PlatformStats | null; ti
       name: 'TikTok Creator Rewards',
       requirements: rewards,
       eligible: eligible(rewards),
-      note: `Also requires being 18+ and videos over 1 minute (use the Standard 65–120 s format). ${tt?.followers == null ? 'TikTok follower and view counts need the user.info.stats and video.list permissions, which can be added after the current app review.' : ''}`.trim(),
+      note: `Also requires being 18+ and videos over 1 minute (the default about-a-minute format). ${tt?.followers == null ? 'TikTok follower and view counts need the user.info.stats and video.list permissions, which can be added after the current app review.' : ''}`.trim(),
       source: 'https://www.tiktok.com/creator-academy/en/article/creator-rewards-program'
     }
   ];

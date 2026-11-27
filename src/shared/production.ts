@@ -85,11 +85,11 @@ export interface Claim {
 
 export type ProductionMode = 'explainer' | 'news';
 
-/** Length formats. Standard (65–120 s) qualifies for programmes that require videos over one minute (e.g. TikTok Creator Rewards). */
+/** Length formats. Standard (about a minute: 61–90 s, the default) qualifies for programmes that require videos over one minute (e.g. TikTok Creator Rewards). */
 export type ProductionFormat = 'short' | 'standard';
 export const PRODUCTION_FORMATS: Record<ProductionFormat, { label: string; minSec: number; maxSec: number; minClaims: number; maxClaims: number; minSources: number; factScenes: [number, number]; maxScenes: number }> = {
   short: { label: 'Short (under 60 s)', minSec: 10, maxSec: 60, minClaims: 1, maxClaims: 6, minSources: 1, factScenes: [3, 5], maxScenes: 10 },
-  standard: { label: 'Standard (65–120 s)', minSec: 65, maxSec: 120, minClaims: 5, maxClaims: 10, minSources: 3, factScenes: [5, 8], maxScenes: 12 }
+  standard: { label: 'About a minute (61–90 s, default)', minSec: 61, maxSec: 90, minClaims: 5, maxClaims: 10, minSources: 3, factScenes: [5, 8], maxScenes: 12 }
 };
 export const isProductionFormat = (v: unknown): v is ProductionFormat => v === 'short' || v === 'standard';
 
@@ -240,6 +240,47 @@ export type KokoroVoiceId = (typeof KOKORO_VOICES)[number]['id'];
 export interface Pronunciation {
   term: string;
   say: string;
+}
+
+/** A dictionary entry. `say` is a respelling every engine reads; `engineSay` overrides it for one engine. */
+export interface PronunciationEntry {
+  id: number;
+  /** null = shared by every business; otherwise this business only (and it wins over a shared entry). */
+  businessId: number | null;
+  term: string;
+  say: string;
+  engineSay: Partial<Record<PreviewEngine, string>>;
+  /** Reference phonetics for people; no installed engine accepts phoneme input (verified), so it is never sent to one. */
+  ipa: string;
+  context: string;
+  caseSensitive: boolean;
+  /** False for entries nobody has auditioned yet. */
+  verified: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PronunciationDraft {
+  term: string;
+  say: string;
+  engineSay?: Partial<Record<PreviewEngine, string>>;
+  ipa?: string;
+  context?: string;
+  caseSensitive?: boolean;
+  verified?: boolean;
+  /** Save for this business only, or for every business. */
+  scope: 'business' | 'global';
+}
+
+/** One term found in a script: how it will be said and whether that is known to be right. */
+export interface PronunciationFinding {
+  term: string;
+  /** dictionary = an entry you saved; builtin = Omnicore's list; rule = spelled-out acronym etc.; uncertain = needs your check. */
+  status: 'dictionary' | 'builtin' | 'rule' | 'uncertain';
+  spoken: string;
+  count: number;
+  scenes: number[];
+  entryId?: number;
 }
 
 /** Research sources Omnicore can query. All are free; none needs an API key. */

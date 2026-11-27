@@ -7,13 +7,16 @@ import { searchTerms, significantTokens } from './text';
 import { runFfmpeg } from '../media/ffmpeg';
 import { downloadTo, fetchJson, fetchRetry } from './http';
 import { ProviderUnavailableError, type VisualProvider, type VisualRequest, type VisualResult } from './types';
-import { assetRelevance } from '../media/relevance';
-import { graphicHtml } from '../media/graphics';
+import { assetRelevance, seriesKey } from '../media/relevance';
+import { graphicHtml, revealSteps } from '../media/graphics';
 
 /** Renders self-contained HTML to a 1080×1920 PNG (Electron offscreen in the app; injected in tests). */
 export type Rasterizer = (html: string, outPng: string, signal: AbortSignal) => Promise<void>;
 
-const GENERIC = /^(ai|how|why|what|use|uses|used|work|works|explained|training|model|models|new|large|data|system|systems)$/i;
+/** Series of the images already used in this production (keys are file titles, or openverse:id with the title in usedTitles). */
+const usedSeries = (req: Pick<VisualRequest, 'usedKeys' | 'usedTitles'>): Set<string> => new Set([...req.usedKeys, ...(req.usedTitles ?? [])].filter((k) => !k.startsWith('openverse:') && !k.startsWith('graphic:') && !k.startsWith('card:')).map(seriesKey));
+
+const GENERIC = /^(ai|how|why|what|use|uses|used|work|works|explained|training|model|models|new|large|data|system|systems|history|histories|rise|future|role|impact|story|evolution|guide|introduction|basics|today|latest|artificial|intelligence|world|age|era)$/i;
 
 /**
  * Search phrases for a scene, most specific first: the planned query, the topic, named things in the
@@ -189,15 +192,16 @@ export class CommonsVisuals implements VisualProvider {
     const cited = wiki.filter((s) => req.scene.sourceIds.includes(s.id));
     for (const group of [cited, wiki]) {
       if (!group.length) continue;
-      for (const c of (await this.articleImages(group.map((s) => s.title), signal)).filter((x) => !req.usedKeys.has(x.key))) {
-        const rel = assetRelevance({ title: c.key, description: c.description }, req.scene, req.brief.topic, { fromCitedArticle: true });
+      for (const c of (await this.articleImages(group.map((s) => s.title), signal)).filter((x) => !req.usedKeys.has(x.key) && !usedSeries(req).has(seriesKey(x.key)))) {
+        const rel = assetRelevance({ title: c.key, description: c.description }, req.scene, req.brief.topic, { fromCitedArticle: true, context: req.contextTerms });
         if (rel.ok) return this.save(c, req, signal, `article:${group.map((s) => s.id).join(',')}`, rel.reason);
       }
     }
     const queries = photoQueries(req);
     for (const q of queries) {
       for (const c of await this.search(q, req.brief.topic, req.usedKeys, signal)) {
-        const rel = assetRelevance({ title: c.key, description: c.description }, req.scene, req.brief.topic);
+        if (usedSeries(req).has(seriesKey(c.key))) continue; // one shot per photo series
+        const rel = assetRelevance({ title: c.key, description: c.description }, req.scene, req.brief.topic, { context: req.contextTerms });
         if (rel.ok) return this.save(c, req, signal, `search:${q}`, rel.reason);
       }
     }
@@ -424,7 +428,7 @@ export class OpenverseVisuals implements VisualProvider {
       const r = await fetchJson<{ results?: OpenverseImage[] }>(`${this.api}?${params}`, { signal });
       for (const img of r.results ?? []) {
         const key = `openverse:${img.id}`;
-        if (req.usedKeys.has(key) || img.mature) continue;
+        if (req.usedKeys.has(key) || img.mature || usedSeries(req).has(seriesKey(img.title ?? ''))) continue;
         if ((img.width ?? 0) < 800 || (img.height ?? 0) < 600) continue;
         const license = openverseLicense(img.license, img.license_version);
         const verdict = evaluateLicense(license, this.policy);
@@ -432,7 +436,7 @@ export class OpenverseVisuals implements VisualProvider {
         const creator = (img.creator ?? '').trim();
         if (verdict.attributionRequired && !creator) continue;
         const title = (img.title ?? '').trim() || 'Untitled';
-        const rel = assetRelevance({ title, tags: (img.tags ?? []).map((t) => t.name) }, req.scene, req.brief.topic);
+        const rel = assetRelevance({ title, tags: (img.tags ?? []).map((t) => t.name) }, req.scene, req.brief.topic, { context: req.contextTerms });
         if (!rel.ok) continue;
         const ext = img.filetype === 'png' || /\.png($|\?)/i.test(img.url) ? '.png' : '.jpg';
         const file = req.outBase + ext;
@@ -488,13 +492,25 @@ export class GraphicsVisuals implements VisualProvider {
     const spec = req.plan.graphic;
     const file = `${req.outBase}.png`;
     await this.rasterize(graphicHtml(spec, req.scene.index), file, signal);
+    // Lists, comparisons and timelines build up one item at a time across the scene.
+    const k = revealSteps(spec);
+    const frames: string[] = [];
+    if (k > 1) {
+      for (let j = 1; j <= k; j++) {
+        const fr = `${req.outBase}-f${j}.png`;
+        if (j === k) fs.copyFileSync(file, fr);
+        else await this.rasterize(graphicHtml(spec, req.scene.index, j), fr, signal);
+        frames.push(fr);
+      }
+    }
+    const creditedTo = 'attribution' in spec ? spec.attribution : spec.kind === 'source' ? spec.publisher : undefined;
     return {
       file,
       key: `graphic:${spec.kind}:${req.scene.index}`,
       sourceUrl: '',
       license: 'Original graphic (Omnicore)',
       attribution: 'Graphic by AI, Actually',
-      meta: { generated: true, graphicKind: spec.kind, planReason: req.plan.reason, labelled: true }
+      meta: { generated: true, graphicKind: spec.kind, planReason: req.plan.reason, labelled: true, ...(frames.length ? { frames } : {}), ...(creditedTo ? { creditedTo } : {}) }
     };
   }
 }

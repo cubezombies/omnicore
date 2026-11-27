@@ -9,7 +9,11 @@ export interface Relevance {
   reason: string;
 }
 
-const GENERIC_TOKENS = new Set(['ai', 'data', 'model', 'training', 'train', 'system', 'new', 'large', 'use', 'work', 'technology', 'computer', 'computing', 'research', 'study', 'future', 'accelerate']);
+// Generic or framing words ("the history of…", "the future of…") never anchor an image to the story on their own.
+const GENERIC_TOKENS = new Set(['ai', 'data', 'model', 'training', 'train', 'system', 'new', 'large', 'use', 'work', 'technology', 'computer', 'computing', 'research', 'study', 'future', 'accelerate', 'history', 'histor', 'rise', 'role', 'impact', 'story', 'evolution', 'basic', 'introduction', 'guide', 'explained', 'today', 'latest', 'artificial', 'intelligence', 'world', 'age', 'era', 'part', 'way', 'thing', 'change', 'power', 'made']);
+
+/** A photo's series name: the title without numbers, so "Deck (6372966)" and "Deck (6372950)" count as one. */
+export const seriesKey = (title: string): string => title.replace(/^File:/, '').replace(/\.\w+$/, '').replace(/[\d_()[\]#.,-]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
 
 const hits = (want: Set<string>, have: string[]): string[] => [...want].filter((w) => have.some((h) => h === w || (w.length >= 4 && h.startsWith(w)) || (h.length >= 4 && w.startsWith(h))));
 
@@ -18,7 +22,7 @@ const hits = (want: Set<string>, have: string[]): string[] => [...want].filter((
  * (anchored), and also the scene's subject unless it comes from a cited article. Logos, brand marks and
  * software screenshots are rejected outright, since they can mislead or belong to someone else.
  */
-export function assetRelevance(meta: { title: string; description?: string; tags?: string[] }, scene: Pick<Scene, 'visualQuery' | 'narration'>, topic: string, opts: { fromCitedArticle?: boolean } = {}): Relevance {
+export function assetRelevance(meta: { title: string; description?: string; tags?: string[] }, scene: Pick<Scene, 'visualQuery' | 'narration'>, topic: string, opts: { fromCitedArticle?: boolean; context?: string[] } = {}): Relevance {
   const title = meta.title.replace(/^File:/, '').replace(/\.\w+$/, '');
   const restricted = restrictionProblem('', '', title);
   if (restricted) return { ok: false, matched: [], reason: `rejected: ${restricted}` };
@@ -57,6 +61,13 @@ export function assetRelevance(meta: { title: string; description?: string; tags
   const ok = opts.fromCitedArticle
     ? mt.length + mq.length >= 1
     : titleAnchor.length >= 1 && ((mt.length >= Math.min(2, T.size) && mt.length > 0) || mq.length + mn.length >= 1);
+  // An acronym alone is ambiguous ("GPU" is also a historical Soviet agency): it needs a second, specific match from the
+  // story or from the business's own topic keywords.
+  const acronyms = new Set((topic.match(/\b[A-Z][A-Z0-9]{1,5}s?\b/g) ?? []).map((a) => a.toLowerCase().replace(/s$/, '')));
+  if (ok && !opts.fromCitedArticle && titleAnchor.length && titleAnchor.every((a) => acronyms.has(a))) {
+    const extra = new Set([...Q, ...N, ...significantTokens((opts.context ?? []).join(' '))].filter((w) => !acronyms.has(w) && !GENERIC_TOKENS.has(w)));
+    if (!hits(extra, have).length) return { ok: false, matched, reason: `only the acronym ${titleAnchor.join(', ')} matches; nothing else confirms it is the same thing` };
+  }
   if (!ok && !opts.fromCitedArticle && matched.length && !titleAnchor.length) return { ok, matched, reason: `the title names no specific topic word (matched only ${matched.join(', ')} via tags or generic words)` };
   return { ok, matched, reason: ok ? `matches ${matched.join(', ')}` : matched.length ? `only loosely related (${matched.join(', ')})` : 'no topic words in the image metadata' };
 }

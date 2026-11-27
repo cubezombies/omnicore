@@ -167,7 +167,7 @@ export class OperatingEngine {
   produceIdea(ideaId: number, actor: string, reason: string): number {
     const idea = this.d.ops.getIdea(ideaId);
     const destinations = this.d.ops.resolveDestinations(idea.brandId);
-    const p = this.d.productions.create(idea.brandId, idea.topic, null, '', idea.mode, { origin: 'autonomous', ideaId: idea.id, destinations });
+    const p = this.d.productions.create(idea.brandId, idea.topic, null, '', idea.mode, { origin: 'autonomous', ideaId: idea.id, destinations, format: 'standard' });
     this.d.ops.decideIdea(idea.id, 'selected', reason, p.id);
     this.d.audit.record({ actor, businessId: idea.brandId, type: 'idea.selected', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { topic: idea.topic, score: idea.score, reason } });
     this.d.audit.record({ actor, businessId: idea.brandId, type: 'production.destination', productionId: p.id, data: { destinations } });

@@ -376,6 +376,28 @@ const MIGRATIONS: string[] = [
      UNION ALL SELECT 'AI regulation and policy', 'Laws, regulators and policy debates.', '["regulation","AI Act","policy","law"]', 7) t
   WHERE c.slug = 'ai-actually';
   `,
+  // v10: central pronunciation dictionary. business_id NULL = shared by every business; a business entry overrides it.
+  // The old global list in the provider settings moves here unchanged.
+  `
+  CREATE TABLE pronunciations (
+    id              INTEGER PRIMARY KEY,
+    business_id     INTEGER REFERENCES channels(id) ON DELETE CASCADE,
+    term            TEXT NOT NULL,
+    say             TEXT NOT NULL,
+    engine_say      TEXT NOT NULL DEFAULT '{}',
+    ipa             TEXT NOT NULL DEFAULT '',
+    context         TEXT NOT NULL DEFAULT '',
+    case_sensitive  INTEGER NOT NULL DEFAULT 0,
+    verified        INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE UNIQUE INDEX idx_pron_term ON pronunciations(COALESCE(business_id, 0), lower(term));
+  INSERT OR IGNORE INTO pronunciations (term, say)
+    SELECT trim(json_extract(j.value, '$.term')), trim(json_extract(j.value, '$.say'))
+    FROM settings s, json_each(json_extract(s.value, '$.pronunciations')) j
+    WHERE s.key = 'providers' AND json_valid(s.value) AND trim(COALESCE(json_extract(j.value, '$.term'), '')) <> '' AND trim(COALESCE(json_extract(j.value, '$.say'), '')) <> '';
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

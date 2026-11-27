@@ -32,10 +32,10 @@ const kokoro = (s: ProviderSettings, dirs: ProviderDirs) =>
 
 export const narrator = (s: ProviderSettings, dirs: ProviderDirs): NarrationProvider =>
   s.narration === 'piper'
-    ? new PiperNarration(piperExePath(s, dirs), s.piperVoice, dirs.tmpDir, s.speechRate)
+    ? new PiperNarration(piperExePath(s, dirs), s.piperVoice, dirs.tmpDir, s.speechRate, s.pronunciations)
     : s.narration === 'sherpa'
       ? kokoro(s, dirs)
-      : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate);
+      : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate, s.pronunciations);
 
 /** Build the provider set from the user's settings. */
 export function buildProviders(s: ProviderSettings, dirs: ProviderDirs): Providers {
@@ -52,7 +52,7 @@ export function buildProviders(s: ProviderSettings, dirs: ProviderDirs): Provide
     writer: s.writer === 'openai-compatible' ? llmWriter(s) : new ExtractiveWriter(),
     fallbackWriter: s.writer === 'openai-compatible' && s.writerFallback ? new ExtractiveWriter() : undefined,
     narration: narrator(s, dirs),
-    fallbackNarration: s.narration === 'windows-sapi' ? undefined : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate),
+    fallbackNarration: s.narration === 'windows-sapi' ? undefined : new SapiNarration(dirs.tmpDir, s.voice, s.speechRate, s.pronunciations),
     visuals: s.visuals.map((id) => visualById[id]?.()).filter((v): v is VisualProvider => !!v)
   };
 }

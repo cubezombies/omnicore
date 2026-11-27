@@ -14,6 +14,7 @@ import { Analytics } from './pages/Analytics';
 import { Businesses } from './pages/Businesses';
 import { BusinessSettings } from './pages/BusinessSettings';
 import { Topics } from './pages/Topics';
+import { Pronunciation } from './pages/Pronunciation';
 
 /** Navigation is grouped by task. Module pages only appear for businesses that enable that module. */
 const NAV = [
@@ -32,6 +33,7 @@ const NAV = [
     group: 'Business',
     items: [
       { key: 'topics', label: 'Topics' },
+      { key: 'pronunciation', label: 'Pronunciation', module: 'media' },
       { key: 'accounts', label: 'Accounts & Channels', module: 'media' },
       { key: 'operations', label: 'Operations', module: 'media' },
       { key: 'analytics', label: 'Analytics' },
@@ -152,6 +154,7 @@ export function App() {
         {props && shown === 'operations' && <Operations />}
         {props && shown === 'accounts' && <Accounts business={active!} />}
         {props && shown === 'topics' && <Topics business={active!} />}
+        {props && shown === 'pronunciation' && <Pronunciation business={active!} />}
         {props && shown === 'analytics' && <Analytics business={active!} />}
         {props && shown === 'settings' && <BusinessSettings business={active!} onSaved={() => void reload()} />}
       </main>

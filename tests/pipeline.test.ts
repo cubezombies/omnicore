@@ -160,6 +160,31 @@ describe('production pipeline', () => {
     expect(pb.status).toBe('completed');
   }, 120_000);
 
+  it('re-voices only the scenes with a corrected word and keeps visuals and other clips', async () => {
+    const runner = makeRunner();
+    const p = repo.create(1, 'large language models', null, '');
+    runner.enqueue(p.id);
+    await runner.idle();
+    const before = repo.get(p.id);
+    const imagesBefore = before.assets.filter((a) => a.kind === 'image').map((a) => a.id);
+    const otherClip = before.assets.find((a) => a.kind === 'narration' && a.sceneIndex === 0)!.id;
+    const voice = { calls: 0 };
+    let visualCalls = 0;
+    providers.narration = fakeNarration(voice);
+    const gfx = new GraphicsVisuals(fakeRaster);
+    providers.visuals = [{ ...failingVisual(''), id: 'graphics', fetch: (r, s) => (visualCalls++, gfx.fetch(r, s)) }];
+    runner.renarrateScenes(p.id, [1]);
+    await runner.idle();
+    const after = repo.get(p.id);
+    expect(after.status).toBe('completed');
+    expect(voice.calls).toBe(1); // only scene 2 was re-voiced
+    expect(visualCalls).toBe(0); // visuals kept
+    expect(after.assets.filter((a) => a.kind === 'image').map((a) => a.id)).toEqual(imagesBefore);
+    expect(after.assets.find((a) => a.kind === 'narration' && a.sceneIndex === 0)!.id).toBe(otherClip);
+    expect(after.outputPath).toBeTruthy();
+    expect(() => runner.renarrateScenes(p.id, [99])).toThrow(/None of those scenes/);
+  }, 120_000);
+
   it('falls back to the next visual provider, and explains when all of them fail', async () => {
     providers.visuals = [failingVisual('rate limited'), emptyVisual, new TitleCardVisuals(() => ffmpeg)];
     const runner = makeRunner();

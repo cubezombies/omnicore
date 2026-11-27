@@ -101,6 +101,13 @@ export function planScene(scene: Scene, brief: Brief, sources: Source[], channel
   if (figs.length) {
     candidates.push({ kind: 'stat', query, graphic: { kind: 'stat', value: figs[0].raw, label: scene.onScreenText || firstSentence(scene.narration), attribution: publisher }, reason: `narration states ${figs[0].raw}` });
   }
+  // Two or more dates in a scene read best as a timeline (dates and wording straight from the narration).
+  const years = [...new Set(scene.narration.match(/\b(19|20)\d{2}\b/g) ?? [])];
+  if (years.length >= 2) {
+    const clauses = scene.narration.split(/(?<=[.;])\s+|,\s+(?=(?:and |then |by |in )?(?:19|20)\d{2}\b)/);
+    const events = years.slice(0, 5).map((y) => ({ when: y, what: (clauses.find((c) => c.includes(y)) ?? y).replace(new RegExp(`\\b(in|by|since|from)?\\s*${y}\\b,?\\s*`, 'i'), '').replace(/[.;]$/, '').trim() || y }));
+    candidates.push({ kind: 'timeline', query, graphic: { kind: 'timeline', title: scene.onScreenText || brief.topic, events, attribution: publisher }, reason: `narration mentions ${years.join(', ')}` });
+  }
   const steps = processSteps(scene.narration);
   if (steps) candidates.push({ kind: 'steps', query, graphic: { kind: 'steps', title: scene.onScreenText || brief.topic, steps }, reason: 'narration describes a process' });
   if (ATTRIBUTED.test(scene.narration)) candidates.push({ kind: 'quote', query, graphic: quote, reason: 'attributed claim: shown as what the source says' });

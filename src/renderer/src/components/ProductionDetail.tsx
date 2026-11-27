@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { Platform, Publication, QaRun, TikTokPostOptions } from '../../../shared/operations';
 import { TikTokPostDialog } from './TikTokPostDialog';
+import { PronunciationPanel } from './PronunciationPanel';
+import type { Business } from '../../../shared/business';
 import {
   CLAIM_KIND_LABELS,
   SOURCE_KIND_LABELS,
@@ -54,7 +56,7 @@ function StepRow({ s }: { s: ProductionStep }) {
   );
 }
 
-export function ProductionDetail({ production: p, onDeleted }: { production: Production; onDeleted: () => void }) {
+export function ProductionDetail({ production: p, onDeleted, business }: { production: Production; onDeleted: () => void; business?: Business }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rerunFrom, setRerunFrom] = useState<StepName>('render');
@@ -154,6 +156,8 @@ export function ProductionDetail({ production: p, onDeleted }: { production: Pro
           )}
         </section>
       </div>
+
+      {p.storyboard && business && <PronunciationPanel production={p} business={business} />}
 
       {p.storyboard && (
         <section>

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { PLATFORMS, type AutonomySettings, type Platform, type Privacy, type TikTokPostOptions } from '../shared/operations';
 import { LIMITS, isStage, type ContentDraft, type ContentPatch, type Stage } from '../shared/domain';
+import type { PronunciationDraft } from '../shared/production';
 import { isBusinessType, isModuleId, type BusinessDraft, type BusinessPatch, type ModuleId, type Topic, type TopicDraft } from '../shared/business';
 import {
   type PreviewEngine,
@@ -401,4 +402,32 @@ export function topicDraft(v: unknown): TopicDraft {
 export function idList(v: unknown): number[] {
   if (!Array.isArray(v) || v.length > 500) throw new ValidationError('Expected a list of ids');
   return v.map((x) => id(x));
+}
+
+// ---- pronunciation ---------------------------------------------------------------------
+const ENGINES = ['sherpa', 'piper', 'windows-sapi'] as const;
+export function pronunciationDraft(v: unknown): PronunciationDraft {
+  const o = object(v, 'pronunciation');
+  const term = str(o.term, 'Term', 60).trim();
+  if (!term || /\s/.test(term)) throw new ValidationError('A term is one word as written (e.g. Kubernetes or GPT-4o)');
+  const say = str(o.say, 'Pronunciation', 120).trim();
+  if (!say) throw new ValidationError('Write how the term should be said');
+  const engineSay: PronunciationDraft['engineSay'] = {};
+  if (o.engineSay !== undefined) {
+    const es = object(o.engineSay, 'engine overrides');
+    for (const [k, val] of Object.entries(es)) {
+      if (!(ENGINES as readonly string[]).includes(k)) throw new ValidationError(`Unknown engine ${k}`);
+      const t = str(val, 'Engine pronunciation', 120).trim();
+      if (t) engineSay[k as (typeof ENGINES)[number]] = t;
+    }
+  }
+  if (o.scope !== 'business' && o.scope !== 'global') throw new ValidationError('Choose whether this is for this business or every business');
+  return { term, say, engineSay, ipa: o.ipa === undefined ? '' : str(o.ipa, 'Phonetic notes', 120), context: o.context === undefined ? '' : str(o.context, 'Context', 300), caseSensitive: o.caseSensitive === undefined ? false : bool(o.caseSensitive), verified: o.verified === undefined ? true : bool(o.verified), scope: o.scope };
+}
+
+export function audition(v: unknown): { text: string; term?: string; say?: string } {
+  const o = object(v, 'audition');
+  const text = str(o.text, 'Text', 400).trim();
+  if (!text) throw new ValidationError('Nothing to say');
+  return { text, term: o.term === undefined ? undefined : str(o.term, 'Term', 60).trim(), say: o.say === undefined ? undefined : str(o.say, 'Pronunciation', 120).trim() };
 }

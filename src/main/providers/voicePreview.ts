@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { VOICE_PREVIEW_TEXT, sampleUrl, type KokoroVoiceId, type PreviewEngine, type ProviderSettings, type VoicePreview } from '../../shared/production';
+import { VOICE_PREVIEW_TEXT, sampleUrl, type KokoroVoiceId, type PreviewEngine, type Pronunciation, type ProviderSettings, type VoicePreview } from '../../shared/production';
 import { narrator, type ProviderDirs } from './registry';
 import type { NarrationProvider } from './types';
 
@@ -15,8 +15,8 @@ export interface PreviewStyle {
 /** Builds the narrator for a preview from a copy of the settings with only the engine and voice swapped; nothing is saved. */
 export const previewNarrator =
   (getSettings: () => ProviderSettings, dirs: ProviderDirs, make: typeof narrator = narrator) =>
-  (engine: PreviewEngine, voice: string): NarrationProvider => {
-    const s = getSettings();
+  (engine: PreviewEngine, voice: string, pronunciations?: Pronunciation[]): NarrationProvider => {
+    const s = { ...getSettings(), ...(pronunciations ? { pronunciations } : {}) };
     const copy: ProviderSettings =
       engine === 'sherpa' ? { ...s, narration: 'sherpa', sherpaVoice: voice as KokoroVoiceId } : engine === 'piper' ? { ...s, narration: 'piper', piperVoice: voice } : { ...s, narration: 'windows-sapi', voice };
     return make(copy, dirs);
@@ -44,26 +44,32 @@ export class VoicePreviews {
 
   constructor(
     private readonly dir: string,
-    private readonly make: (engine: PreviewEngine, voice: string) => NarrationProvider,
+    private readonly make: (engine: PreviewEngine, voice: string, pronunciations?: Pronunciation[]) => NarrationProvider,
     private readonly style: () => PreviewStyle
   ) {}
 
-  key(engine: PreviewEngine, voice: string): string {
+  key(engine: PreviewEngine, voice: string, say?: { text: string; pronunciations: Pronunciation[] }): string {
     const st = this.style();
-    return crypto.createHash('sha256').update(JSON.stringify({ v: 1, engine, voice, text: VOICE_PREVIEW_TEXT, st })).digest('hex').slice(0, 24);
+    const what = say ? { text: say.text, pron: say.pronunciations } : { text: VOICE_PREVIEW_TEXT };
+    return crypto.createHash('sha256').update(JSON.stringify({ v: 1, engine, voice, ...what, st })).digest('hex').slice(0, 24);
   }
 
-  preview(engine: PreviewEngine, voice: string, signal: AbortSignal = AbortSignal.timeout(180_000)): Promise<VoicePreview> {
+  /**
+   * Preview a voice. With `say`, speak that text (a word or sentence) using exactly those dictionary entries:
+   * this is how pronunciation corrections are auditioned before they are saved.
+   */
+  preview(engine: PreviewEngine, voice: string, signal: AbortSignal = AbortSignal.timeout(180_000), say?: { text: string; pronunciations: Pronunciation[] }): Promise<VoicePreview> {
     if (!voice) return Promise.reject(new Error('Choose a specific voice to preview.'));
-    const key = this.key(engine, voice);
+    if (say && !say.text.trim()) return Promise.reject(new Error('Nothing to say.'));
+    const key = this.key(engine, voice, say);
     const running = this.inflight.get(key);
     if (running) return running;
-    const p = this.run(engine, voice, key, signal).finally(() => this.inflight.delete(key));
+    const p = this.run(engine, voice, key, signal, say).finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);
     return p;
   }
 
-  private async run(engine: PreviewEngine, voice: string, key: string, signal: AbortSignal): Promise<VoicePreview> {
+  private async run(engine: PreviewEngine, voice: string, key: string, signal: AbortSignal, say?: { text: string; pronunciations: Pronunciation[] }): Promise<VoicePreview> {
     const wav = path.join(this.dir, `${PREFIX}${key}.wav`);
     const meta = path.join(this.dir, `${PREFIX}${key}.json`);
     if (fs.existsSync(wav) && fs.existsSync(meta)) {
@@ -77,14 +83,14 @@ export class VoicePreviews {
       }
     }
 
-    const n = this.make(engine, voice);
+    const n = this.make(engine, voice, say?.pronunciations);
     const status = await n.check(signal);
     if (!status.available) throw new Error(`Voice unavailable: ${status.detail}`);
     fs.mkdirSync(this.dir, { recursive: true });
     const tmp = path.join(this.dir, `${PREFIX}${key}.partial.wav`);
     let r;
     try {
-      r = await n.synthesize(VOICE_PREVIEW_TEXT, tmp, signal);
+      r = await n.synthesize(say?.text ?? VOICE_PREVIEW_TEXT, tmp, signal);
     } catch (e) {
       fs.rmSync(tmp, { force: true });
       throw new Error(`Couldn't synthesise the preview: ${(e as Error).message}`);

@@ -17,7 +17,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
   const [detail, setDetail] = useState<Production | null>(null);
   const [topic, setTopic] = useState('');
   const [mode, setMode] = useState<ProductionMode>('explainer');
-  const [format, setFormat] = useState<ProductionFormat>('short');
+  const [format, setFormat] = useState<ProductionFormat>('standard');
   const [error, setError] = useState<string | null>(null);
   const [showProviders, setShowProviders] = useState(false);
   const { items } = useContent(channel.id, ['script', 'production', 'review'], refreshKey);
@@ -144,6 +144,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
         <div>
           {detail ? (
             <ProductionDetail
+              business={channel}
               production={detail}
               onDeleted={() => {
                 setSelected(null);
