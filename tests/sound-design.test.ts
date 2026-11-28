@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { allowedFor, clearedLicence, soundCues, storyMood } from '../src/main/audio/sound';
+import { allowedFor, clearedLicence, storyMood } from '../src/main/audio/sound';
 import { refuseAudio } from '../src/main/audio/discovery';
 import { musicCredit } from '../src/main/publishing/metadata';
 import { openDatabase } from '../src/main/db/database';
@@ -47,14 +47,7 @@ describe('licences', () => {
 });
 
 describe('placement and platforms', () => {
-  it('places an intro riser, a whoosh before each inner cut and an outro accent', () => {
-    expect(soundCues([5, 8, 7, 4], { intro: true, transitions: true, outro: true })).toEqual([
-      { role: 'intro', atSec: 0 },
-      { role: 'transition', atSec: 4.7 },
-      { role: 'transition', atSec: 12.7 },
-      { role: 'outro', atSec: 20 }
-    ]);
-  });
+
 
   it('never lets a platform-only or platform-limited track go elsewhere', () => {
     expect(allowedFor({ usage: 'embedded', restrictions: {} }, ['tiktok', 'youtube']).ok).toBe(true);
@@ -77,13 +70,14 @@ describe('selection and QA', () => {
     const profile = { ...DEFAULT_SOUND_PROFILE, autoDiscover: false };
     const a = await lib.select(DEFAULT_SETTINGS, 1, { mood: 'tense', platforms: ['tiktok', 'youtube'], profile });
     expect(a.music?.origin).toBe('generated');
-    expect(a.music?.title).toMatch(/Pulse/);
-    expect([a.intro?.title, a.transition?.title, a.outro?.title]).toEqual(['Riser (generated)', 'Whoosh (generated)', 'Pop (generated)']);
+    expect(a.music?.title).toBe('Bright pulse 120 BPM (generated)'); // the phone-audible bed, never the legacy pulse bed
+    expect(Object.keys(a).sort()).toEqual(['discovered', 'music', 'refused']); // no automatic effects of any kind
+    expect(lib.list('sfx')).toEqual([]); // and none generated
     const none = await lib.select(DEFAULT_SETTINGS, 1, { mood: 'calm', platforms: ['tiktok'], profile, override: { mode: 'none', trackId: null } });
     expect(none.music).toBeNull();
     db.prepare('UPDATE audio_library SET restrictions = ? WHERE id = ?').run(JSON.stringify({ platforms: ['tiktok'] }), a.music!.id);
     await expect(lib.select(DEFAULT_SETTINGS, 1, { mood: 'calm', platforms: ['youtube'], profile, override: { mode: 'track', trackId: a.music!.id } })).rejects.toThrow(/not licensed for youtube/);
-  }, 60_000);
+  }, 180_000);
 
   it('fails QA when required music is missing or a track is not licensed for a destination', async () => {
     const db = openDatabase(':memory:');

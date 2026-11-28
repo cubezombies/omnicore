@@ -27,6 +27,11 @@ import { PronunciationRepository, checkPronunciations, englishWords } from './pr
 import { onAutonomySettingsChanged, registerIpc } from './ipc';
 import { SoundLibrary } from './library';
 import { DATA_DIR_ENV, resolveDataDir, resolveLibraryPath, resolveMediaPath, resolveSamplePath } from './paths';
+import { JobRepository } from './automation/jobs';
+import { CircuitBreakers } from './automation/circuit';
+import { ComfyRuntime } from './comfy/runtime';
+import { ComfyService } from './comfy/service';
+import type { ProviderDirs } from './providers/registry';
 
 // Resolve and apply the data directory before anything else touches userData,
 // so the database and the Chromium profile both live outside the install dir.
@@ -266,19 +271,60 @@ if (!app.requestSingleInstanceLock()) {
     const productions = new ProductionRepository(db);
     const productionsDir = path.join(dataDir, 'productions');
     const tmpDir = path.join(dataDir, 'tmp');
-    const dirs = { tmpDir, toolsDir: path.join(dataDir, 'tools'), rasterize: electronRasterize };
+    const dirs: ProviderDirs = { tmpDir, toolsDir: path.join(dataDir, 'tools'), rasterize: electronRasterize };
     const vocalAsr = new SherpaWhisper(path.join(dataDir, 'tools'));
     const library = new SoundLibrary(db, path.join(dataDir, 'library'), () => resolveFfmpeg(productions.getSettings().ffmpegPath), (wav, signal) => (vocalAsr.available() ? vocalAsr.transcribe(wav, signal) : Promise.resolve('')));
     fs.mkdirSync(productionsDir, { recursive: true });
-    productions.markInterrupted();
-    productions.restoreOutputs(productionsDir);
     const ops = new OperationsRepository(db);
     const pronunciations = new PronunciationRepository(db);
     const businesses = new BusinessRepository(db);
     const topics = new TopicRepository(db);
     const business = new BusinessContext(db, businesses);
     const audit = new AuditLedger(db, path.join(dataDir, 'evidence'));
+    const jobs = new JobRepository(db);
+    const breakers = new CircuitBreakers(
+      () => {
+        const r = ops.getReliability();
+        return { threshold: r.circuitFailureThreshold, cooldownMs: r.circuitCooldownMinutes * 60_000 };
+      },
+      (service, state, detail) => audit.record({ actor: 'system', type: 'service.circuit', data: { service, state, detail } })
+    );
+    // ComfyUI as a managed service: Omnicore starts/stops it with its own port and folders; generations are recorded.
+    const comfyRuntime = new ComfyRuntime(
+      () => {
+        const s = productions.getSettings();
+        return { installDir: s.comfyInstallDir, port: s.comfyPort, dataDir: path.join(dataDir, 'comfyui') };
+      },
+      (type, data) => audit.record({ actor: 'system', type, data })
+    );
+    const comfy = new ComfyService({
+      db,
+      runtime: comfyRuntime,
+      breakers,
+      settings: () => {
+        const s = productions.getSettings();
+        return { model: s.comfyCheckpoint, maxConcurrent: s.comfyMaxConcurrent, minFreeVramMb: s.comfyMinFreeVramMb, unloadAfterJob: s.comfyUnloadAfterJob, autoStart: s.comfyAutoStart };
+      },
+      audit: (type, businessId, productionId, data) => audit.record({ actor: 'system', type, businessId: businessId ?? undefined, productionId: productionId ?? undefined, data })
+    });
+    dirs.comfy = {
+      status: async () => {
+        const model = productions.getSettings().comfyCheckpoint;
+        const approved = comfy.models().filter((m) => m.approved).map((m) => m.file);
+        if (!model) return { available: false, detail: 'Choose an approved model in Studio → ComfyUI.', options: approved };
+        if (!approved.includes(model)) return { available: false, detail: `"${model}" is not approved for production visuals.`, options: approved };
+        return { available: true, detail: `Managed ComfyUI · ${model}${comfyRuntime.running() ? ' · running' : ' · starts when needed'}`, options: approved };
+      },
+      generate: (r) => comfy.generate(r)
+    };
     const runner = new ProductionRunner({
+      jobs,
+      breakers,
+      // Nothing starts, retries or re-runs while production is frozen (audio pipeline restoration).
+      frozen: () => {
+        const f = ops.productionFreeze();
+        return f.frozen ? f.reason : null;
+      },
       ops,
       audit,
       asr: new SherpaWhisper(dirs.toolsDir),
@@ -302,6 +348,8 @@ if (!app.requestSingleInstanceLock()) {
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.onProductionChanged, id);
         else if (appContentsId !== null) BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, id);
       },
+      onCompleted: (id) => engine.reconcileIdea(id),
+      productionEffects: (id) => ops.getProductionEffects(id)?.effects ?? [],
       onScript: (id, sb) => {
         // Copy the generated script into the linked content item if it has none yet.
         const p = productions.get(id);
@@ -327,7 +375,20 @@ if (!app.requestSingleInstanceLock()) {
         decrypt: (b) => safeStorage.decryptString(Buffer.from(b))
       }
     });
+    // Crash recovery (interrupted jobs closed and audited), then a watchdog for stalled and expired jobs.
+    runner.recoverAfterRestart();
+    productions.restoreOutputs(productionsDir);
+    setInterval(() => {
+      const r = ops.getReliability();
+      try {
+        runner.checkOverdue({ stallMs: r.stallMinutes * 60_000, queuedExpiryMs: r.queuedExpiryHours * 3_600_000 });
+      } catch (e) {
+        audit.record({ actor: 'system', type: 'watchdog.error', data: { error: e instanceof Error ? e.message : String(e) } });
+      }
+    }, 60_000).unref();
     const engine = new OperatingEngine({
+      jobs,
+      breakers,
       publisher,
       ops,
       productions,
@@ -342,7 +403,7 @@ if (!app.requestSingleInstanceLock()) {
       },
       onChange: () => BrowserWindow.getAllWindows()[0]?.webContents.send(IPC.onProductionChanged, 0)
     });
-    registerIpc({ repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations });
+    registerIpc({ comfy, comfyRuntime, jobs, breakers, repo, productions, runner, info: { version: app.getVersion(), dataDir }, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations });
     registerMediaProtocol(productionsDir, library.dir, samplesDir);
     // Keep every window on the real active business, whoever switched it.
     business.onChange((b) => BrowserWindow.getAllWindows().forEach((w) => w.webContents.send(IPC.onBusinessChanged, b.id)));
@@ -357,7 +418,10 @@ if (!app.requestSingleInstanceLock()) {
       // Registering a login item only makes sense for the installed app (dev would register electron.exe).
       if (app.isPackaged && !SMOKE) app.setLoginItemSettings({ openAtLogin: a.runAtStartup, args: ['--background'] });
       if (keepInTray && !tray) {
-        tray = new Tray(nativeImage.createFromPath(process.execPath).resize({ width: 16, height: 16 }));
+        // The app icon as a real image (nativeImage cannot read an .exe, which left the tray icon blank).
+        const iconFile = [path.join(process.resourcesPath, 'icon.png'), path.join(app.getAppPath(), 'build', 'icon.png')].find((f) => fs.existsSync(f));
+        const icon = iconFile ? nativeImage.createFromPath(iconFile) : nativeImage.createEmpty();
+        tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16, quality: 'best' }));
         tray.setToolTip('Omnicore');
         tray.on('click', () => (mainWindow ? (mainWindow.show(), mainWindow.focus()) : createWindow()));
       }
@@ -388,6 +452,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     app.on('will-quit', () => {
       stopKokoroGpuWorkers();
+      void comfyRuntime.stop();
       db.close();
     });
 

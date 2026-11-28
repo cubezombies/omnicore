@@ -5,7 +5,7 @@ import { assEscape, assHeader } from '../media/captions';
 import { evaluateLicense, restrictionProblem, type LicenseRecord } from '../media/assetPolicy';
 import { searchTerms, significantTokens } from './text';
 import { runFfmpeg } from '../media/ffmpeg';
-import { downloadTo, fetchJson, fetchRetry } from './http';
+import { downloadTo, fetchJson } from './http';
 import { ProviderUnavailableError, type VisualProvider, type VisualRequest, type VisualResult } from './types';
 import { assetRelevance, seriesKey } from '../media/relevance';
 import { graphicHtml, revealSteps } from '../media/graphics';
@@ -218,88 +218,40 @@ export class CommonsVisuals implements VisualProvider {
 // ---------------------------------------------------------------------------
 // ComfyUI: local image generation on your own GPU (e.g. via Stability Matrix).
 
-export function comfyWorkflow(prompt: string, checkpoint: string, seed: number): Record<string, unknown> {
-  return {
-    '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: checkpoint } },
-    '5': { class_type: 'EmptyLatentImage', inputs: { width: 768, height: 1344, batch_size: 1 } },
-    '6': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['4', 1] } },
-    '7': { class_type: 'CLIPTextEncode', inputs: { text: 'text, letters, watermark, logo, signature, lowres, blurry, deformed', clip: ['4', 1] } },
-    '3': {
-      class_type: 'KSampler',
-      inputs: { seed, steps: 25, cfg: 6, sampler_name: 'euler', scheduler: 'normal', denoise: 1, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] }
-    },
-    '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
-    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'omnicore', images: ['8', 0] } }
-  };
+/** What the visuals step needs from the managed ComfyUI service (see main/comfy/service.ts). */
+export interface ComfyGenerator {
+  status(): Promise<{ available: boolean; detail: string; options: string[] }>;
+  generate(r: { businessId: number; productionId: number; sceneIndex: number; jobId?: number | null; prompt: string; outFile: string; allowedDir: string; signal: AbortSignal }): Promise<{ file: string; sha256: string; generationId: number; meta: Record<string, unknown> }>;
 }
 
+/**
+ * ComfyUI illustrations through Omnicore's managed service: approved model and workflow only, GPU checked first,
+ * recorded with full provenance, and always labelled as AI-generated (never presented as a photo or evidence).
+ */
 export class ComfyVisuals implements VisualProvider {
   id = 'comfyui';
-  label = 'ComfyUI (local image generation)';
+  label = 'ComfyUI (local AI illustration)';
   costPerUnitUsd = 0;
-  constructor(private readonly baseUrl: string, private readonly checkpoint: string, private readonly pollMs = 1500) {}
+  constructor(private readonly gen: ComfyGenerator | undefined) {}
 
-  private url(p: string) {
-    return `${this.baseUrl.replace(/\/+$/, '')}${p}`;
-  }
-
-  async check(signal?: AbortSignal): Promise<ProviderStatus> {
+  async check(): Promise<ProviderStatus> {
     const base = { id: this.id, kind: 'visuals' as const, label: this.label, costPerUnitUsd: 0 };
-    try {
-      const info = await fetchJson<Record<string, { input?: { required?: { ckpt_name?: [string[]] } } }>>(
-        this.url('/object_info/CheckpointLoaderSimple'),
-        { signal, timeoutMs: 4000, retries: 0 }
-      );
-      const ckpts = info.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] ?? [];
-      if (!this.checkpoint) return { ...base, available: false, detail: 'Choose a checkpoint.', options: ckpts };
-      const ok = ckpts.includes(this.checkpoint);
-      return { ...base, available: ok, detail: ok ? `Checkpoint: ${this.checkpoint}` : `Checkpoint "${this.checkpoint}" not found.`, options: ckpts };
-    } catch {
-      return { ...base, available: false, detail: `No ComfyUI server at ${this.baseUrl}. Start ComfyUI to enable local generation.`, options: [] };
-    }
+    if (!this.gen) return { ...base, available: false, detail: 'ComfyUI is managed by the Omnicore app (not available here).', options: [] };
+    const s = await this.gen.status();
+    return { ...base, ...s };
   }
 
   async fetch(req: VisualRequest, signal: AbortSignal): Promise<VisualResult | null> {
-    if (!this.checkpoint) throw new ProviderUnavailableError('ComfyUI needs a checkpoint. Choose one in Studio → Providers.');
-    const prompt = `${req.scene.visualQuery}, editorial illustration, cinematic lighting, high detail, vertical composition`;
-    const seed = Math.floor(Math.random() * 2 ** 31);
-    let promptId: string;
-    try {
-      const res = await fetchRetry(this.url('/prompt'), {
-        signal,
-        retries: 0,
-        init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: comfyWorkflow(prompt, this.checkpoint, seed), client_id: 'omnicore' }) }
-      });
-      promptId = ((await res.json()) as { prompt_id: string }).prompt_id;
-    } catch (e) {
-      throw new ProviderUnavailableError(`ComfyUI at ${this.baseUrl} did not accept the job: ${(e as Error).message}`);
-    }
-    const deadline = Date.now() + 10 * 60_000;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, this.pollMs));
-      if (signal.aborted) return null;
-      const hist = await fetchJson<Record<string, { outputs?: Record<string, { images?: { filename: string; subfolder: string; type: string }[] }>; status?: { status_str?: string } }>>(
-        this.url(`/history/${promptId}`),
-        { signal }
-      );
-      const entry = hist[promptId];
-      if (!entry) continue;
-      if (entry.status?.status_str === 'error') throw new Error('ComfyUI reported an error while generating the image.');
-      const img = Object.values(entry.outputs ?? {}).flatMap((o) => o.images ?? [])[0];
-      if (!img) continue;
-      const file = `${req.outBase}.png`;
-      const q = new URLSearchParams({ filename: img.filename, subfolder: img.subfolder, type: img.type });
-      await downloadTo(this.url(`/view?${q}`), file, { signal });
-      return {
-        file,
-        key: `comfy:${promptId}`,
-        sourceUrl: '',
-        license: 'AI-generated (local)',
-        attribution: `AI-generated illustration (ComfyUI, ${this.checkpoint})`,
-        meta: { prompt, seed, aiGenerated: true }
-      };
-    }
-    throw new Error('ComfyUI did not finish the image within 10 minutes.');
+    if (!this.gen || req.productionId === undefined || req.businessId === undefined) throw new ProviderUnavailableError('ComfyUI is not available for this production.');
+    const r = await this.gen.generate({ businessId: req.businessId, productionId: req.productionId, sceneIndex: req.scene.index, jobId: req.jobId ?? null, prompt: req.scene.visualQuery, outFile: `${req.outBase}.png`, allowedDir: path.dirname(req.outBase), signal });
+    return {
+      file: r.file,
+      key: `comfy:${r.generationId}`,
+      sourceUrl: '',
+      license: 'AI-generated illustration (Omnicore, local ComfyUI)',
+      attribution: `AI-generated illustration (ComfyUI, ${String(r.meta.model)})`,
+      meta: { ...r.meta, aiGenerated: true }
+    };
   }
 }
 

@@ -93,6 +93,18 @@ describe('pronunciation detection regressions', () => {
     const f = checkPronunciations({ scenes: [{ index: 0, narration: 'they were used to accelerated calculations, computing general-purpose work' }] } as never, [], english);
     expect(f.map((x) => x.term)).not.toEqual(expect.arrayContaining(['accelerated', 'computing', 'general-purpose']));
   });
+
+  // Production 21: "companies", "repositories" and "isn’t" were flagged although the lexicon has company, repository
+  // and isn't. A Latvian name is still flagged.
+  it('knows -ies plurals and contractions with typographic apostrophes, but still flags unknown names', () => {
+    const english = new Set(['company', 'repository', "isn't", 'he', 'founder', 'and', 'the', 'on', 'board']);
+    const f = checkPronunciations({ scenes: [{ index: 0, narration: 'the companies and repositories, and the founder Ģirts Ozoliņš isn’t on board' }] } as never, [], english);
+    const terms = f.map((x) => x.term);
+    expect(terms).not.toEqual(expect.arrayContaining(['companies']));
+    expect(terms).not.toContain('repositories');
+    expect(terms).not.toContain('isn’t');
+    expect(terms).toEqual(expect.arrayContaining(['Ģirts', 'Ozoliņš']));
+  });
 });
 
 describe('engine-specific spoken forms (each verified with Whisper on the real engine)', () => {

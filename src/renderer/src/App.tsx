@@ -15,6 +15,7 @@ import { Businesses } from './pages/Businesses';
 import { BusinessSettings } from './pages/BusinessSettings';
 import { Topics } from './pages/Topics';
 import { Pronunciation } from './pages/Pronunciation';
+import { RightsCompliance } from './pages/RightsCompliance';
 
 /** Navigation is grouped by task. Module pages only appear for businesses that enable that module. */
 const NAV = [
@@ -35,6 +36,7 @@ const NAV = [
       { key: 'topics', label: 'Topics' },
       { key: 'pronunciation', label: 'Pronunciation', module: 'media' },
       { key: 'accounts', label: 'Accounts & Channels', module: 'media' },
+      { key: 'rights', label: 'Rights & Compliance', module: 'media' },
       { key: 'operations', label: 'Operations', module: 'media' },
       { key: 'analytics', label: 'Analytics' },
       { key: 'settings', label: 'Business Settings' }
@@ -59,6 +61,17 @@ export function App() {
   const [active, setActive] = useState<Business | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [page, setPage] = useState<PageKey>('dashboard');
+  const [rightsAnchor, setRightsAnchor] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    // Track cards link to their incident in Rights & Compliance history.
+    const go = (e: Event) => {
+      const d = (e as CustomEvent<{ page: PageKey; anchor?: string }>).detail;
+      if (d.page === 'rights') setRightsAnchor(d.anchor);
+      setPage(d.page);
+    };
+    window.addEventListener('omnicore:navigate', go);
+    return () => window.removeEventListener('omnicore:navigate', go);
+  }, []);
   const [editor, setEditor] = useState<EditorTarget>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -152,6 +165,7 @@ export function App() {
         {props && shown === 'library' && <Library {...props} />}
         {props && shown === 'sounds' && <SoundLibraryPage />}
         {props && shown === 'operations' && <Operations />}
+        {props && shown === 'rights' && <RightsCompliance anchor={rightsAnchor} />}
         {props && shown === 'accounts' && <Accounts business={active!} />}
         {props && shown === 'topics' && <Topics business={active!} />}
         {props && shown === 'pronunciation' && <Pronunciation business={active!} />}

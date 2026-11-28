@@ -131,9 +131,42 @@ export interface QaFinding {
   repair: string;
 }
 
+/** A verification render of the audio pipeline (real narration, music, effects, mix and the audio gate). */
+export interface AudioVerification {
+  version: number;
+  at: string;
+  passed: boolean;
+  profile: string;
+  track: string;
+  narration: string;
+  durationSec: number;
+  findings: QaFinding[];
+  /** Where the verification video and its stems are kept. */
+  dir: string;
+  renderSha256: string;
+}
+
+export interface ProductionFreeze {
+  frozen: boolean;
+  version: number;
+  reason: string;
+  verification: AudioVerification | null;
+  release: { version: number; at: string; note: string; verifiedAt: string } | null;
+}
+
 export interface QaRun {
   id: number;
-  productionId: number;
+  /** Null once the production was deleted; the run and its findings are kept (see productionNumber). */
+  productionId: number | null;
+  /** The production's number at the time of the run (kept after deletion). */
+  productionNumber: number;
+  productionTopic: string;
+  /** SHA-256 of the video file that was checked ('' for runs before the render was hashed). */
+  renderSha256: string;
+  /** The qa.run audit event recording this run. */
+  auditEventId: number | null;
+  /** When the production was deleted, if it was. */
+  productionDeletedAt: string | null;
   round: number;
   status: 'passed' | 'failed' | 'blocked';
   summary: { critical: number; major: number; minor: number; checks: number; repairs: string[] };
@@ -270,7 +303,8 @@ export interface AnalyticsReport {
 
 export interface Publication {
   id: number;
-  productionId: number;
+  /** Null once the production itself has been deleted (the publication record is kept). */
+  productionId: number | null;
   platform: Platform;
   accountId: number | null;
   /** Omnicore privacy, or the exact TikTok level the user chose on the posting screen. */
@@ -283,6 +317,24 @@ export interface Publication {
   approvedBy: string;
   createdAt: string;
   updatedAt: string;
+  /** Production number and topic at the time, kept even if the production is later deleted. */
+  productionNumber: number;
+  productionTopic: string;
+  /** The connected account's handle at the time. */
+  accountHandle: string;
+  /** SHA-256 of the exact video file uploaded (a corrected render is a new attempt, never an overwrite). */
+  renderSha256: string;
+  /** The platform accepted the upload. */
+  uploadedAt: string | null;
+  /** The platform confirmed publication. */
+  publishedAt: string | null;
+  failedAt: string | null;
+  /** Set only when the user records a deletion or the platform confirms one. */
+  deletedAt: string | null;
+  deletionSource: '' | 'user' | 'platform';
+  deletionNote: string;
+  /** Non-empty when the record was rebuilt from the audit log (e.g. lost to an older cascade delete). */
+  restoredFrom: string;
 }
 
 /** What the UI may show about a configured developer app (secrets never leave the main process). */

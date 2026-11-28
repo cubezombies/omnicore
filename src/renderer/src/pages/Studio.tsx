@@ -2,8 +2,12 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { PRODUCTION_FORMATS, STEP_LABELS, type Production, type ProductionFormat, type ProductionMode, type ProductionSummary } from '../../../shared/production';
 import type { PageProps } from '../App';
 import { ContentList, useContent } from '../components/ContentList';
+import { DestinationBadges } from '../components/PublicationStatus';
+import { usePublicationOverview } from '../components/usePublicationOverview';
 import { ProductionDetail, StatusBadge, errorText, usd } from '../components/ProductionDetail';
 import { ProviderSettingsPanel } from '../components/ProviderSettingsPanel';
+import { ProductionFreezeCard } from '../components/ProductionFreeze';
+import { ComfyPanel } from '../components/ComfyPanel';
 
 function progressOf(p: ProductionSummary): number {
   const done = p.steps.filter((s) => s.status === 'done').length;
@@ -13,6 +17,7 @@ function progressOf(p: ProductionSummary): number {
 
 export function Studio({ channel, refreshKey, openEditor }: PageProps) {
   const [list, setList] = useState<ProductionSummary[] | null>(null);
+  const { byProduction } = usePublicationOverview(list?.map((p) => `${p.id}:${p.updatedAt}:${p.publishStatus}:${p.approval}`).join('|'));
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<Production | null>(null);
   const [topic, setTopic] = useState('');
@@ -75,6 +80,8 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
           Providers
         </button>
       </header>
+      <ProductionFreezeCard compact />
+      <ComfyPanel />
 
       {showProviders && <ProviderSettingsPanel onClose={() => setShowProviders(false)} />}
 
@@ -125,6 +132,7 @@ export function Studio({ channel, refreshKey, openEditor }: PageProps) {
                       <span className="row-title">{p.topic}</span>
                       <span className="prod-meta">
                         <StatusBadge status={p.status} />
+                        {byProduction.get(p.id) && <DestinationBadges statuses={byProduction.get(p.id)!} />}
                         <span className="muted small">
                           {running ? STEP_LABELS[running.step] : p.durationSec ? `${p.durationSec.toFixed(0)}s` : ''} · {usd(p.costUsd)}
                         </span>

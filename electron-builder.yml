@@ -12,6 +12,10 @@ asar: true
 # FFmpeg must be a real file on disk to be spawned.
 asarUnpack:
   - node_modules/ffmpeg-static/**
+# The tray icon is loaded from a real file (an .exe cannot be read as an image).
+extraResources:
+  - from: build/icon.png
+    to: icon.png
 win:
   icon: build/icon.png
   target:

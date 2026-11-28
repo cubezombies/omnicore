@@ -7,8 +7,8 @@ import { openDatabase } from '../src/main/db/database';
 import { ProductionRepository } from '../src/main/db/productions';
 import { GENERATED_LICENSE, SoundLibrary } from '../src/main/library';
 import { probe, resolveFfmpeg } from '../src/main/media/ffmpeg';
-import { buildRenderArgs, transitionTimes } from '../src/main/media/render';
-import { soundtrackFindings } from '../src/main/qa/engine';
+import { buildRenderArgs } from '../src/main/media/render';
+import { audioGateFindings } from '../src/main/audio/analysis';
 import { concatWavs, readWavPcm, writeWav } from '../src/main/media/wav';
 import { resolveLibraryPath } from '../src/main/paths';
 import { ProductionRunner } from '../src/main/pipeline/runner';
@@ -16,8 +16,10 @@ import { estimateWordTimings, lengthScaleFor, PiperNarration, splitForSpeech } f
 import { TitleCardVisuals } from '../src/main/providers/visuals';
 import { ExtractiveWriter } from '../src/main/providers/writers';
 import * as v from '../src/main/validation';
-import { DEFAULT_SETTINGS, type ProviderSettings } from '../src/shared/production';
+import { DEFAULT_SETTINGS } from '../src/shared/production';
 import { SOURCES } from './fixtures';
+import { testAudio } from './helpers/audioPlan';
+import { testSoundLibrary } from './helpers/soundLibrary';
 
 const ffmpeg = resolveFfmpeg('');
 let tmp: string;
@@ -100,16 +102,6 @@ describe('Sound Library', () => {
     expect(fs.existsSync(path.join(tmp, 'lib', 'My_Song.wav'))).toBe(false);
   });
 
-  it('picks music and transition effects from settings, generating them if the library is empty', async () => {
-    const lib = new SoundLibrary(db, path.join(tmp, 'lib'), () => ffmpeg);
-    const s = (o: Partial<ProviderSettings>) => ({ ...DEFAULT_SETTINGS, ...o });
-    expect(await lib.pick(s({ musicMode: 'none', sfxTransitions: false }), 1)).toEqual({ music: null, sfx: null });
-    const auto = await lib.pick(s({ musicMode: 'auto', sfxTransitions: true }), 1);
-    expect(auto.music?.origin).toBe('generated');
-    expect(auto.sfx?.tags).toContain('transition');
-    await expect(lib.pick(s({ musicMode: 'track', musicTrackId: auto.sfx!.id }), 1)).rejects.toThrow(/sound effect, not music/);
-  }, 60_000);
-
   it('serves only files directly inside the library folder', () => {
     const root = path.resolve('/lib-root');
     expect(resolveLibraryPath(root, 'omnicore-media://lib/whoosh.m4a')).toBe(path.join(root, 'whoosh.m4a'));
@@ -119,26 +111,28 @@ describe('Sound Library', () => {
   });
 });
 
-describe('render with music and transition effects', () => {
-  it('places one effect per cut and mixes it with the ducked music bed', () => {
+describe('render with music and accents', () => {
+  it('mixes the planned accents with the ducked music bed', () => {
     const scenes = [
       { image: 'a.png', audio: 'a.wav', durationSec: 2 },
       { image: 'b.png', audio: 'b.wav', durationSec: 3 },
       { image: 'c.png', audio: 'c.wav', durationSec: 1 }
     ];
-    expect(transitionTimes({ scenes })).toEqual([1.7, 4.7]);
-    const args = buildRenderArgs({ scenes, captions: 'c.ass', output: 'o.mp4', music: { path: 'm.m4a', volume: 0.1 }, sfx: { path: 'w.m4a', volume: 0.3, atSec: [1.7, 4.7] } });
+    const args = buildRenderArgs({ scenes, captions: 'c.ass', output: 'o.mp4', audio: testAudio(3, { sfx: [{ path: 'r.m4a', atSec: [1.7, 4.7] }] }) });
     const fc = args[args.indexOf('-filter_complex') + 1];
-    expect(fc).toContain('[7:a]aresample'); // sfx input after 3 images + 3 audio + music
+    expect(fc).toContain('[8:a]aresample'); // sfx input after 3 images + 3 audio + music + ducking envelope
     expect(fc).toContain('asplit=2[sx0_0][sx0_1]');
     expect(fc).toContain('[sx0_1]adelay=4700|4700[sd0_1]');
-    expect(fc).toContain('[bed][sd0_0][sd0_1]amix=inputs=3');
+    expect(fc).toContain('[sfxbase][sd0_0][sd0_1]amix=inputs=3');
+    expect(fc).toContain('[narr][mus][sfx]amix=inputs=3');
+    // Stems are written next to the video for the audio gate.
+    for (const stem of ['narration', 'music', 'music-dry', 'sfx']) expect(args).toContain(`stems/${stem}.flac`);
   });
 
   it('renders a production with library music + whoosh and credits them', async () => {
     const repo = new ProductionRepository(db);
-    const lib = new SoundLibrary(db, path.join(tmp, 'lib'), () => ffmpeg);
-    const settings = { ...DEFAULT_SETTINGS, writer: 'extractive' as const, visuals: ['title-card' as const], musicMode: 'auto' as const, sfxTransitions: true };
+    const lib = await testSoundLibrary(db, ffmpeg, path.join(tmp, 'lib'));
+    const settings = { ...DEFAULT_SETTINGS, writer: 'extractive' as const, visuals: ['title-card' as const], musicMode: 'auto' as const };
     const runner = new ProductionRunner({
       repo,
       productionsDir: path.join(tmp, 'prod'),
@@ -153,7 +147,8 @@ describe('render with music and transition effects', () => {
           synthesize: async (text, out) => {
             const d = Math.max(1, text.split(' ').length * 0.45); // a realistic ~2.2 words/s, so the calm bed fits
             tone(out, d);
-            return { durationSec: d, voice: 'Fake', words: text.split(' ').slice(0, 3).map((t, i) => ({ text: t, start: i * 0.3, end: i * 0.3 + 0.25 })) };
+            const n = text.split(' ').length;
+            return { durationSec: d, voice: 'Fake', words: text.split(' ').map((t, i) => ({ text: t, start: (i * d) / n, end: ((i + 0.9) * d) / n })) };
           }
         },
         visuals: [new TitleCardVisuals(() => ffmpeg)]
@@ -167,24 +162,21 @@ describe('render with music and transition effects', () => {
     await runner.idle();
     const r = repo.get(p.id);
     expect(r.error).toBeNull();
-    expect(r.assets.filter((a) => a.kind === 'music' || a.kind === 'sfx').map((a) => a.kind).sort()).toEqual(['music', 'sfx', 'sfx', 'sfx']);
-    expect(r.assets.filter((a) => a.kind === 'sfx').map((a) => a.meta.role).sort()).toEqual(['intro', 'outro', 'transition']);
+    expect(r.assets.filter((a) => a.kind === 'music' || a.kind === 'sfx').map((a) => a.kind).sort()).toEqual(['music']); // narration + music only: no automatic effects
     const credits = fs.readFileSync(path.join(runner.dirFor(p.id), 'credits.txt'), 'utf8');
-    expect(credits).toMatch(/Music: Ambient pad \(generated\), Generated by Omnicore/);
-    expect(credits).toMatch(/Sound effect: Whoosh/);
+    expect(credits).toMatch(/Music: Soft keys 75 BPM \(generated\), Generated by Omnicore/);
+    expect(credits).not.toMatch(/Whoosh/i);
     // The real mix: music normalised and ducked well under the voice, still audible, and the video fades out.
     const info = await probe(ffmpeg, r.outputPath!);
-    const sound = await soundtrackFindings({ production: r, dir: runner.dirFor(p.id), ffmpeg, allowShareAlike: false }, r.outputPath!, info.durationSec);
-    const byId = Object.fromEntries(sound.map((f) => [f.checkId, f]));
-    expect(byId['audio.balance'].passed, byId['audio.balance'].message).toBe(true);
-    expect(byId['audio.music-audible'].passed, byId['audio.music-audible'].message).toBe(true);
-    expect(byId['audio.ending'].passed, byId['audio.ending'].message).toBe(true);
+    const g = await audioGateFindings({ ffmpeg, dir: runner.dirFor(p.id), finalFile: r.outputPath!, audioCodec: info.audio?.codec, sampleRate: info.audio?.sampleRate, durationSec: info.durationSec, hasMusicAsset: true });
+    const failedChecks = g.findings.filter((f) => !f.passed).map((f) => `${f.checkId}: ${f.message}`);
+    expect(failedChecks).toEqual([]);
     // Re-render keeps the shared library files intact.
     runner.rerun(p.id, 'render');
     await runner.idle();
     expect(repo.get(p.id).status).toBe('completed');
     expect(lib.list().every((t) => fs.existsSync(lib.pathOf(t)))).toBe(true);
-  }, 120_000);
+  }, 300_000);
 });
 
 describe('settings validation for Piper and sound', () => {

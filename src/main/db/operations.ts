@@ -17,6 +17,9 @@ import {
 } from '../../shared/operations';
 import { NotFoundError } from './repository';
 import { DEFAULT_SOUND_PROFILE, type MusicOverride, type SoundProfile } from '../../shared/production';
+import { AUDIO_PIPELINE_VERSION, type ContextualEffect, type ProductionEffects } from '../../shared/audioMix';
+import type { AudioVerification, ProductionFreeze } from '../../shared/operations';
+import { DEFAULT_RELIABILITY, type AutomationHalt, type ReliabilitySettings } from '../../shared/automation';
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 type Row = Record<string, unknown>;
@@ -86,11 +89,27 @@ export class OperationsRepository {
   private soundKey = (businessId: number) => `business:${businessId}:sound`;
   getSoundProfile(businessId: number): SoundProfile {
     const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.soundKey(businessId)) as Row | undefined;
-    return { ...DEFAULT_SOUND_PROFILE, ...(r ? (JSON.parse(String(r.value)) as Partial<SoundProfile>) : {}) };
+    // Automatic effects (intro riser, transitions, outro pop) are retired: a stored "on" is never honoured or shown.
+    return { ...DEFAULT_SOUND_PROFILE, ...(r ? (JSON.parse(String(r.value)) as Partial<SoundProfile>) : {}), introAccent: false, transitions: false, outroAccent: false };
   }
   saveSoundProfile(businessId: number, s: SoundProfile): SoundProfile {
     this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.soundKey(businessId), JSON.stringify(s));
     return this.getSoundProfile(businessId);
+  }
+  private effectsKey = (productionId: number) => `production:${productionId}:effects`;
+  /** Contextual effects you approved for one production (none unless you chose some). */
+  getProductionEffects(productionId: number): ProductionEffects | null {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.effectsKey(productionId)) as Row | undefined;
+    return r ? (JSON.parse(String(r.value)) as ProductionEffects) : null;
+  }
+  setProductionEffects(productionId: number, effects: ContextualEffect[]): ProductionEffects | null {
+    if (!effects.length) {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(this.effectsKey(productionId));
+      return null;
+    }
+    const v: ProductionEffects = { effects, approvedAt: new Date().toISOString() };
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.effectsKey(productionId), JSON.stringify(v));
+    return v;
   }
   private overrideKey = (productionId: number) => `production:${productionId}:music`;
   getMusicOverride(productionId: number): MusicOverride | null {
@@ -255,19 +274,108 @@ export class OperationsRepository {
     return Number(stale.changes) + Number(extra.changes);
   }
 
+  // ---- automation reliability -----------------------------------------------------------------------------------
+  getReliability(): ReliabilitySettings {
+    const r = this.db.prepare("SELECT value FROM settings WHERE key = 'reliability'").get() as Row | undefined;
+    return { ...DEFAULT_RELIABILITY, ...(r ? (JSON.parse(String(r.value)) as Partial<ReliabilitySettings>) : {}) };
+  }
+  saveReliability(s: ReliabilitySettings): ReliabilitySettings {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('reliability', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(s));
+    return this.getReliability();
+  }
+  private haltKey = (businessId: number) => `business:${businessId}:automation-halt`;
+  /** A hard stop: automation for this business does nothing until you clear it (set on a failed gate). */
+  getAutomationHalt(businessId: number): AutomationHalt | null {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(this.haltKey(businessId)) as Row | undefined;
+    return r ? (JSON.parse(String(r.value)) as AutomationHalt) : null;
+  }
+  setAutomationHalt(businessId: number, h: AutomationHalt): void {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(this.haltKey(businessId), JSON.stringify(h));
+  }
+  clearAutomationHalt(businessId: number): void {
+    this.db.prepare('DELETE FROM settings WHERE key = ?').run(this.haltKey(businessId));
+  }
+
+  // ---- production freeze (audio pipeline restoration) ---------------------------------------------------------
+  /**
+   * Production is frozen until the current audio pipeline version has passed a real verification render AND you
+   * released it. Missing state means frozen, so a fresh install or an upgrade starts frozen.
+   */
+  productionFreeze(): ProductionFreeze {
+    const get = <T>(k: string): T | null => {
+      const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(k) as Row | undefined;
+      return r ? (JSON.parse(String(r.value)) as T) : null;
+    };
+    const verification = get<AudioVerification>('audio.pipeline.verification');
+    const release = get<{ version: number; at: string; note: string; verifiedAt: string }>('audio.pipeline.release');
+    const released = release?.version === AUDIO_PIPELINE_VERSION;
+    const verified = verification?.passed === true && verification.version === AUDIO_PIPELINE_VERSION;
+    return {
+      frozen: !released,
+      version: AUDIO_PIPELINE_VERSION,
+      reason: released
+        ? ''
+        : verified
+          ? 'the audio pipeline passed its verification render; release production in Operations to resume.'
+          : `audio pipeline v${AUDIO_PIPELINE_VERSION} has not passed its verification render yet (music, narration, ducking, effects and levels must pass on a real render).`,
+      verification,
+      release
+    };
+  }
+  recordAudioVerification(v: AudioVerification): void {
+    this.db.prepare(`INSERT INTO settings (key, value) VALUES ('audio.pipeline.verification', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(v));
+  }
+  /** Release production. Refused unless a verification render passed on the current audio pipeline version. */
+  releaseProduction(note: string): ProductionFreeze {
+    const f = this.productionFreeze();
+    if (!f.verification?.passed || f.verification.version !== AUDIO_PIPELINE_VERSION) throw new Error(`Production stays frozen: ${f.reason}`);
+    this.db
+      .prepare(`INSERT INTO settings (key, value) VALUES ('audio.pipeline.release', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      .run(JSON.stringify({ version: AUDIO_PIPELINE_VERSION, at: new Date().toISOString(), note, verifiedAt: f.verification.at }));
+    return this.productionFreeze();
+  }
+
   // ---- QA history -----------------------------------------------------------
-  saveQaRun(productionId: number, round: number, status: QaRun['status'], summary: QaRun['summary'], findings: QaFinding[]): QaRun {
-    const res = this.db.prepare(`INSERT INTO qa_runs (production_id, round, status, summary, finished_at) VALUES (?,?,?,?,${NOW})`).run(productionId, round, status, JSON.stringify(summary));
+  /**
+   * Save a QA run with a snapshot of what was checked (business, production number and topic, render hash), so the
+   * record still identifies its video after the production is deleted.
+   */
+  saveQaRun(productionId: number, round: number, status: QaRun['status'], summary: QaRun['summary'], findings: QaFinding[], renderSha256 = ''): QaRun {
+    const res = this.db
+      .prepare(
+        `INSERT INTO qa_runs (production_id, business_id, production_number, production_topic, render_sha256, round, status, summary, finished_at)
+         SELECT p.id, p.channel_id, p.id, p.topic,
+           COALESCE(NULLIF(?, ''), (SELECT json_extract(e.data, '$.sha256') FROM audit_events e WHERE e.type = 'render.output' AND e.production_id = p.id ORDER BY e.id DESC LIMIT 1), ''),
+           ?, ?, ?, ${NOW}
+         FROM productions p WHERE p.id = ?`
+      )
+      .run(renderSha256, round, status, JSON.stringify(summary), productionId);
+    if (!Number(res.changes)) throw new Error(`Production #${productionId} not found.`);
     const runId = Number(res.lastInsertRowid);
     const ins = this.db.prepare('INSERT INTO qa_findings (qa_run_id, check_id, category, severity, passed, message, evidence, repair) VALUES (?,?,?,?,?,?,?,?)');
     for (const f of findings) ins.run(runId, f.checkId, f.category, f.severity, f.passed ? 1 : 0, f.message, JSON.stringify(f.evidence), f.repair);
     return this.qaRuns(productionId).find((r) => r.id === runId)!;
   }
+  /** Link a QA run to the audit event that records it. */
+  linkQaAudit(runId: number, auditEventId: number): void {
+    this.db.prepare('UPDATE qa_runs SET audit_event_id = ? WHERE id = ? AND audit_event_id IS NULL').run(auditEventId, runId);
+  }
   qaRuns(productionId: number): QaRun[] {
-    const runs = this.db.prepare('SELECT * FROM qa_runs WHERE production_id = ? ORDER BY id').all(productionId) as Row[];
+    return this.mapQaRuns(this.db.prepare('SELECT * FROM qa_runs WHERE production_id = ? ORDER BY id').all(productionId) as Row[]);
+  }
+  /** Every QA run of a business, including runs of deleted productions (newest first). */
+  qaHistory(businessId: number): QaRun[] {
+    return this.mapQaRuns(this.db.prepare('SELECT * FROM qa_runs WHERE business_id = ? ORDER BY id DESC').all(businessId) as Row[]);
+  }
+  private mapQaRuns(runs: Row[]): QaRun[] {
     return runs.map((r) => ({
       id: Number(r.id),
-      productionId: Number(r.production_id),
+      productionId: r.production_id === null ? null : Number(r.production_id),
+      productionNumber: Number(r.production_number),
+      productionTopic: String(r.production_topic ?? ''),
+      renderSha256: String(r.render_sha256 ?? ''),
+      auditEventId: r.audit_event_id === null || r.audit_event_id === undefined ? null : Number(r.audit_event_id),
+      productionDeletedAt: (r.production_deleted_at as string) ?? null,
       round: Number(r.round),
       status: r.status as QaRun['status'],
       summary: j(r.summary, { critical: 0, major: 0, minor: 0, checks: 0, repairs: [] }),

@@ -8,7 +8,7 @@ import { KokoroGpuNarration } from './kokoroGpu';
 import { SherpaKokoroNarration } from './sherpa';
 import { PiperNarration } from './piper';
 import type { NarrationProvider, Providers, VisualProvider } from './types';
-import { CommonsVisuals, ComfyVisuals, GraphicsVisuals, OpenverseVisuals, TitleCardVisuals, type Rasterizer } from './visuals';
+import { CommonsVisuals, ComfyVisuals, GraphicsVisuals, OpenverseVisuals, TitleCardVisuals, type ComfyGenerator, type Rasterizer } from './visuals';
 import { ExtractiveWriter, maxWordsForVoice, OpenAICompatibleWriter } from './writers';
 
 const llmWriter = (s: ProviderSettings) =>
@@ -24,6 +24,8 @@ export interface ProviderDirs {
   rasterize?: Rasterizer;
   /** Where in-app installed tools (Piper) live: <data dir>/tools. */
   toolsDir: string;
+  /** The managed ComfyUI service (only inside the app). */
+  comfy?: ComfyGenerator;
 }
 
 export const piperExePath = (s: ProviderSettings, dirs: ProviderDirs): string => s.piperPath || path.join(dirs.toolsDir, 'piper', 'piper.exe');
@@ -47,7 +49,7 @@ export function buildProviders(s: ProviderSettings, dirs: ProviderDirs): Provide
     'wikimedia-commons': () => new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
     openverse: () => new OpenverseVisuals({ allowShareAlike: s.allowShareAlike }),
     graphics: () => new GraphicsVisuals(dirs.rasterize),
-    comfyui: () => new ComfyVisuals(s.comfyUrl, s.comfyCheckpoint),
+    comfyui: () => new ComfyVisuals(dirs.comfy),
     'title-card': () => new TitleCardVisuals(ffmpeg)
   };
   return {
@@ -81,7 +83,7 @@ export async function checkProviders(s: ProviderSettings, dirs: ProviderDirs): P
     new CommonsVisuals({ allowShareAlike: s.allowShareAlike }),
     new OpenverseVisuals({ allowShareAlike: s.allowShareAlike }),
     new GraphicsVisuals(dirs.rasterize),
-    new ComfyVisuals(s.comfyUrl, s.comfyCheckpoint),
+    new ComfyVisuals(dirs.comfy),
     new TitleCardVisuals(() => resolveFfmpeg(s.ffmpegPath))
   ];
   const [statuses, researchStatuses] = await Promise.all([

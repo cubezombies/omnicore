@@ -7,6 +7,10 @@ import type { ProductionRunner } from '../pipeline/runner';
 import type { EngineStatus, Idea } from '../../shared/operations';
 import type { DiscoveryResult } from './discovery';
 import { topicRelevance, type Relevance } from './relevance';
+import { isRetryable } from '../../shared/failures';
+import { HALTING_FAILURES } from '../../shared/automation';
+import type { JobRepository } from '../automation/jobs';
+import type { CircuitBreakers } from '../automation/circuit';
 
 export interface EngineDeps {
   ops: OperationsRepository;
@@ -28,6 +32,10 @@ export interface EngineDeps {
   precheck?: (brandId: number, idea: Idea, signal: AbortSignal) => Promise<{ ok: boolean; reason: string }>;
   /** Is the script writer (the local LLM) loaded and answering? Nothing starts while it is down. */
   writerReady?: () => Promise<{ ok: boolean; reason: string }>;
+  /** Job history (bounded retries survive restarts). */
+  jobs?: Pick<JobRepository, 'automaticRetries'>;
+  /** Circuit breakers: automation does not start work for an open service. */
+  breakers?: Pick<CircuitBreakers, 'allows'>;
 }
 
 /** What the operating engine cannot do on its own — shown in the UI so nobody assumes 24/7 operation. */
@@ -38,15 +46,9 @@ export const ENGINE_LIMITATIONS = [
   'It never spends money and never publishes publicly without your approval.'
 ];
 
-const MAX_ATTEMPTS = 3;
-const RETRY_AFTER_MS = 10 * 60_000;
 /** Ideas checked for independent evidence per scheduling pass (each check runs the research providers). */
 const PRECHECKS_PER_TICK = 3;
 
-/** Failures that will happen again on retry (the story, not the machine): never retried. */
-export const PERMANENT_FAILURE = /Not enough evidence|No news coverage|No usable sources|off topic|not licensed|BLOCKED|never fall back|story is not|Storyboard needs/i;
-/** Failures caused by the local LLM being down or overloaded: retried once it answers again. */
-export const WRITER_FAILURE = /script writer failed|no model loaded|LLM server|HTTP 50[0-9]|ECONNREFUSED|No LLM server is answering|timed out/i;
 
 /**
  * The autonomous operating engine. Lives in the main process (independent of any window):
@@ -106,12 +108,14 @@ export class OperatingEngine {
       for (const brandId of this.d.ops.brandIds()) {
         const s = this.d.ops.getAutonomy(brandId);
         if (!s.enabled && !force) continue;
+        // Hard stop: a failed gate halted automation for this business until you review it.
+        if (this.d.ops.getAutomationHalt(brandId)) continue;
         const last = this.d.ops.lastRun(`discovery:${brandId}`);
         const due = !last || this.now().getTime() - Date.parse(`${last.startedAt}Z`.replace('ZZ', 'Z')) >= s.discoveryEveryHours * 3600_000;
         if (due) await this.runDiscovery(brandId);
         const writer = await this.checkWriter();
         this.retryFailed(brandId, writer);
-        if (writer) await this.maybeStartProduction(brandId);
+        if (writer && (this.d.breakers?.allows('writer') ?? true)) await this.maybeStartProduction(brandId);
         await this.autoPublish(brandId);
       }
       this.lastError = null;
@@ -219,12 +223,13 @@ export class OperatingEngine {
       const existing = this.d.productions.list(idea.brandId).find((x) => x.id === idea.productionId);
       if (existing && (existing.status === 'queued' || existing.status === 'running' || existing.status === 'completed')) throw new Error(`This idea already has production #${existing.id} (${existing.status}).`);
     }
+    this.d.runner.assertNotFrozen?.(); // nothing is created while production is frozen
     const destinations = this.d.ops.resolveDestinations(idea.brandId);
     const p = this.d.productions.create(idea.brandId, idea.topic, null, '', idea.mode, { origin: 'autonomous', ideaId: idea.id, destinations, format: 'standard' });
     this.d.ops.decideIdea(idea.id, 'selected', reason, p.id);
     this.d.audit.record({ actor, businessId: idea.brandId, type: 'idea.selected', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { topic: idea.topic, score: idea.score, reason } });
     this.d.audit.record({ actor, businessId: idea.brandId, type: 'production.destination', productionId: p.id, data: { destinations } });
-    this.d.runner.enqueue(p.id);
+    this.d.runner.enqueue(p.id, actor === 'engine' ? 'automation' : 'user', reason);
     return p.id;
   }
 
@@ -240,36 +245,68 @@ export class OperatingEngine {
   }
 
   /**
-   * Keep idea status in step with its production. Permanent failures (missing evidence, no coverage) are not retried;
-   * writer failures are retried only once the writer answers again; others back off 10, 20, 40 minutes; 3 attempts.
+   * Bring an idea's status in line with its production. A production that completes after a manual retry recovers an
+   * idea the scheduler had marked failed; the change is audited. Safe to call any time (no-op when already in step).
+   */
+  reconcileIdea(productionId: number): void {
+    const p = this.d.productions.get(productionId);
+    if (!p.ideaId || p.status !== 'completed') return;
+    const idea = this.d.ops.getIdea(p.ideaId);
+    if (idea.productionId !== null && idea.productionId !== p.id) return; // the idea belongs to another production
+    if (idea.status !== 'selected' && idea.status !== 'failed') return;
+    const recovered = idea.status === 'failed';
+    this.d.ops.decideIdea(idea.id, 'produced', `production ${p.id} completed (${p.approval})${recovered ? ' after manual recovery' : ''}`, p.id);
+    if (recovered) this.d.audit.record({ actor: 'engine', businessId: p.channelId, type: 'idea.reconciled', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { from: 'failed', to: 'produced', previousDecision: idea.decision } });
+  }
+
+  /**
+   * Keep idea status in step with its production and retry failures by their classification (set where the failure
+   * was thrown, see shared/failures.ts): content and rights failures are not retried; writer failures wait until the
+   * writer answers again; transient and cancelled ones back off 10, 20, 40 minutes; 3 attempts.
    */
   retryFailed(brandId: number, writerOk = true): void {
     let retried = false;
-    for (const p of this.d.productions.list(brandId).filter((x) => x.origin === 'autonomous' && x.ideaId)) {
-      const idea = this.d.ops.getIdea(p.ideaId!);
-      if (p.status === 'completed' && idea.status === 'selected') {
-        this.d.ops.decideIdea(idea.id, 'produced', `production ${p.id} completed (${p.approval})`);
+    for (const p of this.d.productions.list(brandId).filter((x) => x.ideaId)) {
+      if (p.status === 'completed') {
+        this.reconcileIdea(p.id);
         continue;
       }
+      if (p.origin !== 'autonomous') continue;
+      const idea = this.d.ops.getIdea(p.ideaId!);
       if ((p.status === 'failed' || p.status === 'cancelled') && idea.status === 'selected') {
         const failedStep = p.steps.find((st) => st.status === 'failed' || st.status === 'pending');
         const attempts = failedStep?.attempts ?? 0;
         const error = p.error ?? '';
-        if (PERMANENT_FAILURE.test(error)) {
-          this.d.ops.decideIdea(idea.id, 'failed', `not retried (permanent): ${error}`);
-          this.d.audit.record({ actor: 'engine', type: 'idea.failed', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { error, permanent: true } });
+        const failure = p.status === 'cancelled' ? { kind: 'cancelled' as const, code: 'cancelled' } : (p.failure ?? { kind: 'transient' as const, code: 'unclassified' });
+        if (!isRetryable(failure)) {
+          this.d.ops.decideIdea(idea.id, 'failed', `not retried (${failure.kind}: ${failure.code}): ${error}`);
+          this.d.audit.record({ actor: 'engine', type: 'idea.failed', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { error, permanent: true, failureKind: failure.kind, failureCode: failure.code } });
+          // A failed gate (rights, evidence, audio, unsafe state) stops automation for the business: never retried around.
+          if ((HALTING_FAILURES as readonly string[]).includes(failure.kind) && !this.d.ops.getAutomationHalt(brandId)) {
+            this.d.ops.setAutomationHalt(brandId, { reason: `Production #${p.id} failed a ${failure.kind} gate (${failure.code}): ${error}`.slice(0, 600), productionId: p.id, failureKind: failure.kind, at: this.now().toISOString() });
+            this.d.audit.record({ actor: 'engine', businessId: brandId, type: 'automation.halted', productionId: p.id, data: { failureKind: failure.kind, failureCode: failure.code, error } });
+            return;
+          }
           continue;
         }
-        if (WRITER_FAILURE.test(error) && !writerOk) continue; // wait for the LLM; does not use up attempts
-        const waited = this.now().getTime() - Date.parse(p.updatedAt) >= RETRY_AFTER_MS * 2 ** Math.max(0, attempts - 1);
+        if (failure.kind === 'writer' && !writerOk) continue; // wait for the LLM; does not use up attempts
+        // Bounded, configurable retries with exponential back-off, counted from the job history (scheduler retries since
+        // the last run you started), so they survive restarts.
+        const rel = this.d.ops.getReliability();
+        const done = this.d.jobs ? this.d.jobs.automaticRetries(p.id) : Math.max(0, attempts - 1);
+        const waited = this.now().getTime() - Date.parse(p.updatedAt) >= rel.retryBackoffMinutes * 60_000 * 2 ** done;
         // One retry per pass, so a failing job never crowds out new work.
-        if (attempts < MAX_ATTEMPTS && waited && !retried && !this.d.runner.busy()) {
+        if (done < rel.maxAutomaticRetries && waited && !retried && !this.d.runner.busy()) {
           retried = true;
-          this.d.audit.record({ actor: 'engine', type: 'production.retry', productionId: p.id, data: { step: failedStep?.step, attempts, error: p.error } });
-          this.d.runner.retry(p.id);
-        } else if (attempts >= MAX_ATTEMPTS) {
-          this.d.ops.decideIdea(idea.id, 'failed', `gave up after ${attempts} attempts: ${p.error}`);
-          this.d.audit.record({ actor: 'engine', type: 'idea.failed', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { error: p.error } });
+          this.d.audit.record({ actor: 'engine', type: 'production.retry', productionId: p.id, data: { step: failedStep?.step, attempts, automaticRetries: done, error: p.error, failureKind: failure.kind, failureCode: failure.code } });
+          try {
+            this.d.runner.retry(p.id, 'scheduler', `automatic retry ${done + 1} of ${rel.maxAutomaticRetries} (${failure.kind}: ${failure.code})`);
+          } catch (e) {
+            this.lastError = `Retry of #${p.id} refused: ${e instanceof Error ? e.message : String(e)}`;
+          }
+        } else if (done >= rel.maxAutomaticRetries) {
+          this.d.ops.decideIdea(idea.id, 'failed', `gave up after ${done} automatic retries (${failure.kind}: ${failure.code}): ${p.error}`);
+          this.d.audit.record({ actor: 'engine', type: 'idea.failed', subjectType: 'idea', subjectId: idea.id, productionId: p.id, data: { error: p.error, failureKind: failure.kind, failureCode: failure.code } });
         }
       }
     }

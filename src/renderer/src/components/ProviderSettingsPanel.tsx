@@ -349,18 +349,17 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
           {s.visuals.includes('comfyui') && (
             <>
               <label className="field">
-                <span>ComfyUI URL</span>
-                <input value={s.comfyUrl} onChange={(e) => set('comfyUrl', e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Checkpoint</span>
-                <input list="comfy-ckpts" value={s.comfyCheckpoint} onChange={(e) => set('comfyCheckpoint', e.target.value)} />
-                <datalist id="comfy-ckpts">
-                  {opts('comfyui').map((m) => (
-                    <option key={m} value={m} />
+                <span>ComfyUI model (approved models only)</span>
+                <select value={s.comfyCheckpoint} onChange={(e) => set('comfyCheckpoint', e.target.value)}>
+                  <option value="">None selected</option>
+                  {[...new Set([...opts('comfyui'), ...(s.comfyCheckpoint ? [s.comfyCheckpoint] : [])])].map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
                   ))}
-                </datalist>
+                </select>
               </label>
+              <p className="muted small">ComfyUI is managed by Omnicore: start/stop, the GPU, model approval (with its licence) and generation history are in Studio → ComfyUI. AI illustrations are only used when no licensed photo fits, and are labelled on screen.</p>
             </>
           )}
         </fieldset>
@@ -393,16 +392,7 @@ export function ProviderSettingsPanel({ onClose }: { onClose: () => void }) {
             <span>Music volume ({Math.round(s.musicVolume * 100)}%)</span>
             <input type="range" min={0} max={0.5} step={0.01} value={s.musicVolume} onChange={(e) => set('musicVolume', Number(e.target.value))} />
           </label>
-          <label className="check">
-            <input type="checkbox" checked={s.sfxTransitions} onChange={(e) => set('sfxTransitions', e.target.checked)} />
-            Transition sound at scene cuts
-          </label>
-          {s.sfxTransitions && (
-            <label className="field">
-              <span>Effect volume ({Math.round(s.sfxVolume * 100)}%)</span>
-              <input type="range" min={0} max={1} step={0.05} value={s.sfxVolume} onChange={(e) => set('sfxVolume', Number(e.target.value))} />
-            </label>
-          )}
+          
           <label className="field">
             <span>FFmpeg path (blank = bundled)</span>
             <input value={s.ffmpegPath} onChange={(e) => set('ffmpegPath', e.target.value)} />

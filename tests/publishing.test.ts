@@ -80,7 +80,7 @@ function readyProduction(qa: 'passed' | 'failed' = 'passed', approval = 'approve
     JSON.stringify({ tiktok: { platform: 'tiktok', title: 'GPT-6, actually', caption: 'GPT-6 launched. #AI', hashtags: ['#AI'], aiDisclosure: true, credits: '', manualSteps: [] } }),
     p.id
   );
-  ops.saveQaRun(p.id, 1, qa, { critical: 0, major: qa === 'passed' ? 0 : 1, minor: 0, checks: 26, repairs: [] }, []);
+  ops.saveQaRun(p.id, 1, qa, { critical: 0, major: qa === 'passed' ? 0 : 1, minor: 0, checks: 26, repairs: [] }, [{ checkId: 'audio.gate', category: 'audio', severity: 'critical', passed: true, message: 'Audio gate passed', evidence: {}, repair: '' }]);
   return p.id;
 }
 

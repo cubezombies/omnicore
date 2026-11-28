@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { STAGES, STAGE_LABELS, isStage, type Stage } from '../../../shared/domain';
 import type { PageProps } from '../App';
 import { ContentList, useContent } from '../components/ContentList';
+import { usePublicationOverview } from '../components/usePublicationOverview';
 
 export function Library({ channel, refreshKey, openEditor }: PageProps) {
   const [filter, setFilter] = useState<Stage | 'all'>('all');
   const [query, setQuery] = useState('');
   const { items } = useContent(channel.id, filter === 'all' ? undefined : [filter], refreshKey);
+  const { byContent } = usePublicationOverview(`${channel.id}:${refreshKey}:${items?.length ?? 0}`);
   const q = query.trim().toLowerCase();
   const shown = items && (q ? items.filter((i) => `${i.title} ${i.summary}`.toLowerCase().includes(q)) : items);
 
@@ -42,7 +44,7 @@ export function Library({ channel, refreshKey, openEditor }: PageProps) {
           ))}
         </select>
       </div>
-      <ContentList items={shown} empty="No matching content." onOpen={openEditor} />
+      <ContentList items={shown} empty="No matching content." onOpen={openEditor} publication={byContent} />
     </section>
   );
 }

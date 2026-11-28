@@ -31,11 +31,25 @@ import { BusinessContextError, type BusinessContext, type OwnedKind } from './bu
 import * as v from './validation';
 import { discoverMusicFor } from './audio/discovery';
 import { MUSIC_DISCOVERY_ENABLED } from './library';
+import { destinationStatuses } from '../shared/publicationStatus';
+import { effectiveQaStatus, reviewGate } from '../shared/review';
+import { AUDIO_PIPELINE_VERSION } from '../shared/audioMix';
+import { rightsHistory, trackRightsDetails } from './audio/compliance';
+import { resolveEffects } from './audio/effects';
+import type { JobRepository } from './automation/jobs';
+import type { CircuitBreakers } from './automation/circuit';
+import type { ComfyService } from './comfy/service';
+import type { ComfyRuntime } from './comfy/runtime';
+import { gpuInfo } from './comfy/gpu';
 
 type Handler = (...args: unknown[]) => unknown;
 type InvokeKey = Exclude<keyof AppApi, 'onProductionChanged' | 'onBusinessChanged'>;
 
 export interface IpcDeps {
+  comfy: ComfyService;
+  comfyRuntime: ComfyRuntime;
+  jobs: JobRepository;
+  breakers: CircuitBreakers;
   repo: Repository;
   productions: ProductionRepository;
   runner: ProductionRunner;
@@ -58,7 +72,12 @@ export interface IpcDeps {
  * Register every IPC handler. Each one checks the sender is our own top frame
  * and validates its arguments before touching the database or filesystem.
  */
-export function registerIpc({ repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations }: IpcDeps): void {
+/** Tell every window that a production changed (they reload it), e.g. after an approval made outside the runner. */
+function productionChanged(id: number): void {
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(IPC.onProductionChanged, id);
+}
+
+export function registerIpc({ comfy, comfyRuntime, jobs, breakers, repo, productions, runner, info, dirs, library, samplesDir, ops, audit, engine, publisher, isTrustedSender, businesses, topics, business, pronunciations }: IpcDeps): void {
   const previews = new VoicePreviews(samplesDir, previewNarrator(() => productions.getSettings(), dirs), () => previewStyle(productions.getSettings()));
   // Every business-owned request is checked against the active business (held here, in the main process) and
   // against the owner of the record it touches. Missing or invalid context throws; nothing falls back to another business.
@@ -162,6 +181,7 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
         own('content', np.contentId);
         notes = repo.getContent(np.contentId)!.researchNotes;
       }
+      runner.assertNotFrozen(); // checked before a record is created, so a frozen pipeline leaves nothing behind
       const p = productions.create(cid, np.topic, np.contentId ?? null, notes, np.mode ?? 'explainer', { destinations: ops.resolveDestinations(cid), format: np.format ?? 'standard' });
       audit.record({ actor: 'user', type: 'production.created', productionId: p.id, data: { topic: np.topic, mode: np.mode ?? 'explainer', format: np.format ?? 'standard', destinations: p.destinations } });
       runner.enqueue(p.id);
@@ -230,6 +250,47 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       return saved;
     },
     engineStatus: () => engine.status(cur()),
+    // ---- managed ComfyUI (runtime is shared; history and progress are per business) ----
+    comfyStatus: async () => ({ runtime: await comfyRuntime.status(), gpu: await gpuInfo(), progress: comfy.progress(cur()), model: productions.getSettings().comfyCheckpoint }),
+    comfyDetect: () => comfyRuntime.detect(),
+    comfyStart: async () => {
+      audit.record({ actor: 'user', businessId: cur(), type: 'comfy.start.requested', data: {} });
+      return comfyRuntime.start();
+    },
+    comfyStop: async () => {
+      audit.record({ actor: 'user', businessId: cur(), type: 'comfy.stop.requested', data: {} });
+      return comfyRuntime.stop();
+    },
+    comfyRestart: async () => {
+      audit.record({ actor: 'user', businessId: cur(), type: 'comfy.restart.requested', data: {} });
+      return comfyRuntime.restart();
+    },
+    comfyModels: async () => {
+      if (!comfyRuntime.modelsRoot()) await comfyRuntime.detect();
+      return comfy.models();
+    },
+    comfyApproveModel: (file, license, licenseUrl, note) => comfy.approveModel(v.shortText(file, 'Model', 300), v.shortText(license, 'Licence', 200), v.shortText(licenseUrl ?? '', 'Licence URL', 500), v.shortText(note ?? '', 'Note', 500)),
+    comfyRevokeModel: (file, note) => comfy.revokeModel(v.shortText(file, 'Model', 300), v.shortText(note ?? '', 'Note', 500)),
+    comfyHistory: () => comfy.history(cur(), 30),
+
+    // ---- automation reliability (active business only) ----
+    productionActivity: (limit) => {
+      const n = Math.max(1, Math.min(200, Number(limit) || 50));
+      return audit.events({ businessId: cur(), limit: 2000 }).filter((e) => e.type === 'production.action').slice(-n).reverse();
+    },
+    automationStatus: () => ({ halt: ops.getAutomationHalt(cur()), breakers: breakers.status(), jobs: jobs.list(cur(), 30), reliability: ops.getReliability() }),
+    clearAutomationHalt: (note) => {
+      const bid = cur();
+      const h = ops.getAutomationHalt(bid);
+      if (!h) return;
+      ops.clearAutomationHalt(bid);
+      audit.record({ actor: 'user', businessId: bid, type: 'automation.resumed', productionId: h.productionId, data: { halt: h, note: v.shortText(note ?? '', 'Note', 500) } });
+    },
+    saveReliability: (r) => {
+      const saved = ops.saveReliability(v.reliability(r));
+      audit.record({ actor: 'user', businessId: cur(), type: 'reliability.updated', data: { ...saved } });
+      return saved;
+    },
     runDiscoveryNow: () => engine.runDiscovery(cur()),
     listIdeas: () => ops.listIdeas(cur()),
     produceIdea: (id, confirmOffTopic) => {
@@ -243,6 +304,31 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     },
     ideaRelevance: (id) => engine.ideaRelevance(own('idea', id)),
     getSoundProfile: () => ops.getSoundProfile(cur()),
+    getProductionEffects: (id) => ops.getProductionEffects(own('production', id)),
+    setProductionEffects: (id, effects) => {
+      const pid = own('production', id);
+      if (!Array.isArray(effects)) throw new Error('Expected a list of effects.');
+      const list = effects.map((e) => ({ trackId: v.id((e as { trackId: unknown }).trackId), atSec: Number((e as { atSec: unknown }).atSec), note: v.shortText(String((e as { note?: unknown }).note ?? ''), 'Note', 300) }));
+      const resolved = resolveEffects(library, list); // rights check now; repeated at render time
+      const saved = ops.setProductionEffects(pid, list);
+      audit.record({ actor: 'user', businessId: cur(), type: list.length ? 'audio.effects.approved' : 'audio.effects.cleared', productionId: pid, data: { effects: resolved.map((r) => ({ trackId: r.track.id, title: r.track.title, atSec: r.atSec, note: r.note })) } });
+      return saved;
+    },
+    productionFreeze: () => ops.productionFreeze(),
+    verifyAudioPipeline: async () => {
+      const profile = ops.getSoundProfile(cur()).mixProfile;
+      audit.record({ actor: 'user', type: 'audio.verification.started', data: { profile } });
+      const r = await runner.verifyAudioPipeline(cur(), profile, AbortSignal.timeout(15 * 60_000));
+      const v = { version: AUDIO_PIPELINE_VERSION, at: new Date().toISOString(), passed: r.passed, profile: profile ?? 'balanced', track: r.track, narration: r.narration, durationSec: r.durationSec, findings: r.findings, dir: r.dir, renderSha256: r.sha256 };
+      ops.recordAudioVerification(v);
+      audit.record({ actor: 'user', type: 'audio.verification', data: { version: v.version, passed: v.passed, profile: v.profile, track: v.track, narration: v.narration, durationSec: v.durationSec, sha256: v.renderSha256, dir: v.dir, failed: r.findings.filter((f) => !f.passed).map((f) => f.checkId) } });
+      return ops.productionFreeze();
+    },
+    releaseProduction: (note) => {
+      const f = ops.releaseProduction(v.shortText(note ?? '', 'Note', 500));
+      audit.record({ actor: 'user', type: 'production.released', data: { version: f.version, verifiedAt: f.verification?.at, renderSha256: f.verification?.renderSha256, note } });
+      return f;
+    },
     saveSoundProfile: (s) => {
       const bid = cur();
       const saved = ops.saveSoundProfile(bid, v.soundProfile(s));
@@ -256,6 +342,9 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       if (choice.mode === 'track') {
         const t = library.get(choice.trackId!);
         if (t.kind !== 'music') throw new Error(`"${t.title}" is a sound effect, not music.`);
+        // Only an approved track can be chosen (the render re-checks it as well).
+        const r = library.revalidate(t.id);
+        if (!r.ok) throw new Error(`"${t.title}" cannot be chosen: ${r.reason}`);
       }
       const before = ops.getMusicOverride(pid);
       ops.setMusicOverride(pid, choice);
@@ -330,15 +419,21 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     approveProduction: (id, note) => {
       const p = productions.get(own('production', id));
       if (p.approval !== 'awaiting_review') throw new Error(p.approval === 'blocked' ? 'This production failed critical QA checks and cannot be approved.' : `Nothing to approve (status: ${p.approval}).`);
-      const qa = ops.qaRuns(p.id).at(-1);
-      if (qa?.status !== 'passed') throw new Error(`Only videos that passed the quality check can be approved (last result: ${qa?.status ?? 'not run'}). Fix the issues or re-run QA first.`);
+      const gate = reviewGate(p.approval, ops.qaRuns(p.id).at(-1));
+      if (!gate.canApprove) throw new Error(`${gate.label}. ${gate.reason}`);
+      const previous = runner.snapshot(p.id);
       productions.update(p.id, { approval: 'approved' });
       audit.record({ actor: 'user', type: 'approval.granted', productionId: p.id, data: { note: v.shortText(note, 'Note', 500), destinations: p.destinations, publishes: false } });
+      runner.act(p.id, { action: 'approve', initiator: 'user', outcome: 'succeeded', stage: 'review', jobId: null, previous, reason: v.shortText(note, 'Note', 500) });
+      productionChanged(p.id); // the window shows the Post button at once
     },
     rejectProduction: (id, note) => {
       const p = productions.get(own('production', id));
+      const previous = runner.snapshot(p.id);
       productions.update(p.id, { approval: 'rejected' });
       audit.record({ actor: 'user', type: 'approval.rejected', productionId: p.id, data: { note: v.shortText(note, 'Note', 500) } });
+      runner.act(p.id, { action: 'reject', initiator: 'user', outcome: 'succeeded', stage: 'review', jobId: null, previous, reason: v.shortText(note, 'Note', 500) });
+      productionChanged(p.id);
     },
     exportAudit: (id) => {
       const pid = own('production', id);
@@ -353,6 +448,9 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
     verifyAudit: () => audit.verify(),
     auditEvents: (id) => audit.events({ productionId: own('production', id) }),
     listIncidents: () => ops.listIncidents(cur()),
+    // Read-only rights views; incidents and affected productions are limited to the active business.
+    soundRightsDetails: (id) => trackRightsDetails(library.database, library, v.id(id), cur()),
+    rightsHistory: () => rightsHistory(library.database, library, cur()),
     addIncident: (kind, description, productionId, assetKey) => {
       const bid = cur();
       const pid = productionId === null ? null : own('production', productionId);
@@ -365,6 +463,14 @@ export function registerIpc({ repo, productions, runner, info, dirs, library, sa
       audit.record({ actor: 'user', businessId: cur(), type: 'incident.resolved', subjectType: 'incident', subjectId: Number(id) });
     },
     publications: (id) => publisher.publications(own('production', id)),
+    publicationHistory: () => publisher.publicationHistory(cur()),
+    publicationOverview: () => {
+      // Status per destination for every production of the active business (Content Library and Studio badges).
+      const bid = cur();
+      const pubs = publisher.publicationHistory(bid);
+      return productions.list(bid).map((p) => ({ productionId: p.id, contentId: p.contentId ?? null, topic: p.topic, statuses: destinationStatuses(p, pubs.filter((x) => x.productionId === p.id), effectiveQaStatus(ops.qaRuns(p.id).at(-1))) }));
+    },
+    recordPublicationDeletion: (id, note) => publisher.recordDeletion(v.id(id), cur(), 'user', v.shortText(note ?? '', 'Note', 500)),
     publishBlockers: (id) => {
       const p = productions.get(own('production', id));
       return Object.fromEntries(p.destinations.map((d) => [d.platform, publisher.blockers(p.id, d.platform)]));

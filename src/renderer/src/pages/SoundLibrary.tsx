@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SOUND_GENERATORS, libraryUrl, type AudioKind, type AudioTrack, type SoundGeneratorId, type SoundProfile } from '../../../shared/production';
 import { errorText } from '../components/ProductionDetail';
+import { MIX_PROFILES } from '../../../shared/audioMix';
+import { openRightsHistory, RightsDetailsPanel, RightsSummary } from '../components/RightsDetails';
 
 function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
   const [editing, setEditing] = useState(false);
@@ -42,40 +44,35 @@ function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
             · {t.durationSec.toFixed(1)}s · {t.origin}
             {t.tags.length ? ` · ${t.tags.join(', ')}` : ''}
           </span>
-          <div className={t.license ? 'small muted' : 'small field-error'}>{t.license || 'No licence recorded: add one before publishing videos that use this sound.'}</div>
-          {t.attribution && <div className="small muted">Attribution: {t.attribution}</div>}
-          {t.rights.provider && (
-            <div className="small muted">
-              Verified {t.rights.verifiedAt?.slice(0, 10)} via {t.rights.provider} ({t.rights.source}, track {t.rights.providerTrackId}){t.rights.attributionRequired ? ' · credit required in descriptions' : ''} ·{' '}
-              <a href={t.rights.landingUrl} target="_blank" rel="noreferrer">source</a>
-              {t.rights.licenseUrl ? (
-                <>
-                  {' '}
-                  · <a href={t.rights.licenseUrl} target="_blank" rel="noreferrer">licence</a>
-                </>
-              ) : null}
-            </div>
-          )}
+          <RightsSummary t={t} />
           {(t.restrictions.platforms?.length || t.usage === 'platform_native') && <div className="small field-error">{t.usage === 'platform_native' ? 'Platform-only sound: never mixed into exported videos.' : `Only for: ${t.restrictions.platforms!.join(', ')}`}</div>}
-          {t.rightsStatus !== 'approved' && <div className="small field-error">Rights {t.rightsStatus}: never selected, rendered or published.{t.quarantineReason ? ` ${t.quarantineReason}` : ''}</div>}
-          <div className={t.commercialUse === 'yes' ? 'small muted' : 'small field-error'}>{t.commercialUse === 'yes' ? 'Cleared for commercial videos (used automatically)' : t.commercialUse === 'no' ? 'Not for commercial use: never used automatically' : 'Commercial use not confirmed: never used automatically'}</div>
+          {t.rightsStatus === 'unverified' && !t.license && <div className="small field-error">No licence recorded.</div>}
         </div>
         <audio controls preload="none" src={libraryUrl(t.file)} aria-label={`Preview ${t.title}`} />
         <span className="track-actions">
-          <button className="ghost" onClick={() => setEditing((x) => !x)} aria-expanded={editing}>
-            Edit
-          </button>
-          <button className="danger" onClick={remove}>
-            Delete
-          </button>
+          {/* Quarantined and rejected records are evidence: no editing, no deleting (also refused by the app). */}
+          {(t.rightsStatus === 'unverified' || t.rightsStatus === 'approved') && (
+            <button className="ghost" onClick={() => setEditing((x) => !x)} aria-expanded={editing}>
+              Edit
+            </button>
+          )}
+          {(t.rightsStatus === 'unverified' || t.rightsStatus === 'approved') && (
+            <button className="danger" onClick={remove}>
+              Delete
+            </button>
+          )}
         </span>
       </div>
+      <RightsDetailsPanel t={t} />
       {editing && (
         <div className="track-edit">
           <label className="field">
             <span>Title</span>
             <input value={title} onChange={(e) => setTitle(e.target.value)} />
           </label>
+          {t.rightsStatus === 'approved' && <p className="muted small">Approved sound: its licence details can only change through rights verification.</p>}
+          {t.rightsStatus === 'unverified' && <p className="muted small">Recording a licence here does not approve the sound: only verification at the source of record can.</p>}
+          {t.rightsStatus === 'unverified' && (<>
           <label className="field">
             <span>Licence</span>
             <input value={license} placeholder="e.g. CC BY 4.0, CC0, Pixabay Content License" onChange={(e) => setLicense(e.target.value)} />
@@ -96,8 +93,9 @@ function TrackRow({ t, onChanged }: { t: AudioTrack; onChanged: () => void }) {
               <option value="no">No</option>
             </select>
           </label>
+          </>)}
           <label className="field">
-            <span>Tags (comma separated; SFX tagged "transition" are used at scene cuts)</span>
+            <span>Tags (comma separated)</span>
             <input value={tags} onChange={(e) => setTags(e.target.value)} />
           </label>
           <div className="prod-actions">
@@ -141,10 +139,18 @@ function SoundProfileCard() {
   return (
     <section className="card">
       <h2>Sound profile for this business</h2>
-      <label className="check">
-        <input type="checkbox" checked={p.music === 'required'} onChange={(e) => set('music', e.target.checked ? 'required' : 'off')} />
-        Background music in every video (QA fails a video without it)
-      </label>
+      <p className="small">Every video carries narration and approved background music; the mandatory audio gate measures the final render and fails any video without them. There are no automatic sound effects. A contextual effect can be approved for an individual production in its Music &amp; sound panel.</p>
+      <fieldset className="field">
+        <legend>Voice/music mix</legend>
+        {Object.values(MIX_PROFILES).map((m) => (
+          <label key={m.id} className="check">
+            <input type="radio" name="mix-profile" checked={(p.mixProfile ?? 'balanced') === m.id} onChange={() => set('mixProfile', m.id)} />
+            <span>
+              <strong>{m.label}</strong>{m.id === 'balanced' ? ' (default)' : ''} · <span className="muted small">{m.description} Music {m.musicOpenLufs} LUFS between lines, ducked {m.duckDb} dB under the voice.</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
       <fieldset className="field">
         <legend>Preferred moods (the story picks among these; none = any)</legend>
         {(Object.keys(MOOD_LABELS) as MoodId[]).map((m) => (
@@ -155,20 +161,7 @@ function SoundProfileCard() {
         ))}
       </fieldset>
       <label className="check">
-        <input type="checkbox" checked={p.introAccent} onChange={(e) => set('introAccent', e.target.checked)} /> Intro accent (a short riser into the first line)
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={p.transitions} onChange={(e) => set('transitions', e.target.checked)} /> Transition effects at scene cuts
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={p.outroAccent} onChange={(e) => set('outroAccent', e.target.checked)} /> Outro accent
-      </label>
-      <label className="check">
         <input type="checkbox" checked={p.autoDiscover} onChange={(e) => set('autoDiscover', e.target.checked)} /> Find licensed music automatically when the library has nothing for a story's mood
-      </label>
-      <label className="field">
-        <span>Music level under the voice ({Math.round(p.musicVolume * 100)}%)</span>
-        <input type="range" min={0.04} max={0.3} step={0.01} value={p.musicVolume} onChange={(e) => set('musicVolume', Number(e.target.value))} />
       </label>
       <div className="prod-actions">
         <button onClick={save}>Save sound profile</button>
@@ -180,8 +173,6 @@ function SoundProfileCard() {
 }
 
 export function SoundLibraryPage() {
-  const [mood, setMood] = useState<MoodId>('calm');
-  const [found, setFound] = useState<string | null>(null);
   const [tracks, setTracks] = useState<AudioTrack[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -249,32 +240,12 @@ export function SoundLibraryPage() {
       <SoundProfileCard />
       <section className="card">
         <h2>Find licensed music</h2>
-        <p className="small field-error">Switched off after the rights incident of 27 Nov 2026: index metadata listed paid Jamendo Licensing tracks as CC BY. Tracks are only accepted when their source of record verifies the exact file and licence.</p>
-        <p className="muted small">
-          Searches Openverse for instrumental tracks whose licence allows commercial use and syncing to video (CC0, public domain, CC BY). Non-commercial, no-derivatives, share-alike and unclear licences are refused. Each track's licence record is kept as evidence; CC BY tracks are credited in every description. TikTok's Commercial Music Library is not used here: its sounds can't be added to exported videos.
-        </p>
-        <div className="prod-actions">
-          <select aria-label="Mood" value={mood} onChange={(e) => setMood(e.target.value as MoodId)}>
-            {(Object.keys(MOOD_LABELS) as MoodId[]).map((m) => (
-              <option key={m} value={m}>
-                {MOOD_LABELS[m]}
-              </option>
-            ))}
-          </select>
-          <button
-            className="secondary"
-            disabled={!!busy}
-            onClick={() =>
-              run('discover', async () => {
-                const r = await window.api.discoverMusic(mood);
-                setFound(`${r.imported.length} track(s) added.${r.refused.length ? ` Refused: ${r.refused.slice(0, 4).join('; ')}${r.refused.length > 4 ? '…' : ''}` : ''}`);
-              })
-            }
-          >
-            {busy === 'discover' ? 'Searching…' : 'Find music'}
+        <p className="small">
+          Automatic music discovery is off. A track is only approved when its source of record verifies the exact file and licence; search-index metadata never approves a track.{' '}
+          <button className="link" onClick={() => openRightsHistory()}>
+            Rights &amp; Compliance history
           </button>
-        </div>
-        {found && <p className="small muted" role="status">{found}</p>}
+        </p>
       </section>
       {tracks === null ? <p className="muted">Loading…</p> : (
         <>
@@ -285,7 +256,7 @@ export function SoundLibraryPage() {
       <h2>Generate (free, synthesised locally)</h2>
       <p className="muted small">These are created from scratch by FFmpeg on this computer, so they carry no third-party rights.</p>
       <div className="prod-actions">
-        {SOUND_GENERATORS.map((g) => (
+        {SOUND_GENERATORS.filter((g) => g.kind === 'music' && g.id !== 'ambient-pad' && g.id !== 'pulse-bed').map((g) => (
           <button key={g.id} className="secondary" disabled={!!busy} onClick={() => run(g.id, () => window.api.generateSound(g.id as SoundGeneratorId))}>
             {busy === g.id ? 'Generating…' : g.title.replace(' (generated)', '')}
           </button>

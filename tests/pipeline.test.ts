@@ -19,6 +19,8 @@ const fakeRaster: Rasterizer = (html, out, signal) =>
 import { ExtractiveWriter, OpenAICompatibleWriter } from '../src/main/providers/writers';
 import { DEFAULT_SETTINGS, type ProviderSettings } from '../src/shared/production';
 import { SOURCES } from './fixtures';
+import { testSoundLibrary } from './helpers/soundLibrary';
+import type { SoundLibrary } from '../src/main/library';
 
 const ffmpeg = resolveFfmpeg('');
 const status = { available: true, detail: '', costPerUnitUsd: 0 };
@@ -69,6 +71,7 @@ let dir: string;
 let providers: Providers;
 let settings: ProviderSettings;
 let emitted: number[];
+let library: SoundLibrary;
 
 function makeRunner(over: Partial<ConstructorParameters<typeof ProductionRunner>[0]> = {}) {
   return new ProductionRunner({
@@ -77,16 +80,19 @@ function makeRunner(over: Partial<ConstructorParameters<typeof ProductionRunner>
     settings: () => settings,
     providers: () => providers,
     ffmpeg: () => ffmpeg,
+    library,
     channel: () => ({ name: 'AI, Actually', niche: 'AI and technology' }),
     emit: (id) => emitted.push(id),
     ...over
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   db = openDatabase(':memory:');
   repo = new ProductionRepository(db);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aimo-prod-'));
+  // Every production carries music: the real generated soundtrack and effects.
+  library = await testSoundLibrary(db, ffmpeg, path.join(dir, 'library'));
   settings = { ...DEFAULT_SETTINGS, visuals: ['graphics', 'title-card'] };
   emitted = [];
   providers = {
@@ -95,7 +101,7 @@ beforeEach(() => {
     narration: fakeNarration(),
     visuals: [new GraphicsVisuals(fakeRaster), new TitleCardVisuals(() => ffmpeg)]
   };
-});
+}, 240_000);
 afterEach(() => {
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -299,6 +305,8 @@ describe('production pipeline', () => {
     expect(r.status).toBe('failed');
     expect(r.storyboard).toBeNull();
     expect(r.error).toMatch(/never fall back to the deterministic writer/);
+    // Classified where it was thrown: a writer failure is retryable once the writer answers, never permanent.
+    expect(r.failure).toEqual({ kind: 'writer', code: 'writer-unavailable' });
   }, 60_000);
 
   it('flags a fallback script as a major QA finding instead of passing it silently', async () => {
@@ -354,9 +362,14 @@ describe('production deletion', () => {
     audit.record({ actor: 'test', businessId: 1, type: 'production.started', productionId: p.id, data: {} });
     runner.delete(p.id);
     const rows = db.prepare('SELECT type, actor, data FROM audit_events WHERE production_id = ? ORDER BY id').all(p.id) as { type: string; actor: string; data: string }[];
-    expect(rows.map((r) => r.type)).toEqual(['production.started', 'production.deleted']);
-    expect(rows[1].actor).toBe('user');
-    expect(JSON.parse(rows[1].data)).toMatchObject({ topic: 'deleted topic', status: 'queued' });
+    const legacy = rows.filter((r) => r.type !== 'production.action');
+    expect(legacy.map((r) => r.type)).toEqual(['production.started', 'production.deleted']);
+    expect(legacy[1].actor).toBe('user');
+    expect(JSON.parse(legacy[1].data)).toMatchObject({ topic: 'deleted topic', status: 'queued' });
+    // Every production-affecting action is also recorded with its initiator and state before/after.
+    const actions = rows.filter((r) => r.type === 'production.action').map((r) => JSON.parse(r.data) as { action: string; initiator: string; outcome: string; previous: { status: string } });
+    expect(actions.map((a) => [a.action, a.initiator, a.outcome])).toEqual([['cancel', 'user', 'requested'], ['cancel', 'user', 'cancelled'], ['delete', 'user', 'succeeded']]);
+    expect(actions[2].previous).toMatchObject({ status: 'cancelled' });
     expect(() => repo.get(p.id)).toThrow();
     expect(audit.verify().ok).toBe(true);
   });

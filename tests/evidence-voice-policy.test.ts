@@ -21,6 +21,8 @@ import { buildClaims, buildEvidenceBrief, classifyClaim, narrateClaim } from '..
 import * as v from '../src/main/validation';
 import { effectiveWordsPerSec } from '../src/main/providers/registry';
 import { DEFAULT_SETTINGS, KOKORO_VOICES, type Claim, type ProductionAsset, type Source } from '../src/shared/production';
+import { testSoundLibrary } from './helpers/soundLibrary';
+import type { SoundLibrary } from '../src/main/library';
 
 const src = (id: string, kind: Source['kind'], publisher: string, excerpt: string, extra: Partial<Source> = {}): Source => ({ id, title: `${publisher} on AI chips`, url: `https://${id.toLowerCase()}.example/a`, publisher, excerpt, retrievedAt: '', kind, group: `pub:${publisher.toLowerCase()}`, ...extra });
 
@@ -270,11 +272,13 @@ describe('production integration', () => {
   let db: DatabaseSync;
   let repo: ProductionRepository;
   let dir: string;
-  beforeEach(() => {
+  let library: SoundLibrary;
+  beforeEach(async () => {
     db = openDatabase(':memory:');
     repo = new ProductionRepository(db);
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aimo-int-'));
-  });
+    library = await testSoundLibrary(db, ffmpeg, path.join(dir, 'library'));
+  }, 240_000);
   afterEach(() => {
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -302,6 +306,7 @@ describe('production integration', () => {
         visuals: o.visuals ?? [new TitleCardVisuals(() => ffmpeg)]
       }),
       ffmpeg: () => ffmpeg,
+      library,
       channel: () => ({ name: 'AI, Actually', niche: 'AI' }),
       emit: () => {},
       ...(o.render === false ? { render: async () => { throw new Error('render skipped'); } } : {})
@@ -351,7 +356,8 @@ describe('production integration', () => {
     const p = repo.create(1, 'NVIDIA Rubin GPU platform', null, '', 'news');
     r.enqueue(p.id);
     await r.idle();
-    expect(repo.get(p.id).error).toMatch(/^Render: Visual licence check failed, so this video cannot be rendered: Scene 1: wikimedia-commons image has no licence record/);
+    expect(repo.get(p.id).error).toMatch(/^Render: Visual licence or provenance check failed, so this video cannot be rendered: Scene 1: wikimedia-commons image has no licence record/);
+    expect(repo.get(p.id).failure).toEqual({ kind: 'rights', code: 'visual-provenance' }); // a hard stop, never retried
   }, 120_000);
 });
 
@@ -377,7 +383,7 @@ describe('fresh-install defaults and 0.3 → 0.4 settings migration', () => {
     expect(s.sherpaVoice).toBe('af_heart'); // used as soon as they pick Kokoro
     expect(s.researchProviders).not.toContain('wikipedia'); // 0.3 "Wikipedia off" carried over
     expect(s.researchProviders.length).toBeGreaterThan(5);
-    expect(s).toMatchObject({ musicMode: 'auto', sfxTransitions: true, sentencePauseSec: 0.32, allowShareAlike: false });
+    expect(s).toMatchObject({ musicMode: 'auto', sfxTransitions: false, sentencePauseSec: 0.32, allowShareAlike: false }); // transition effects retired
     expect(v.settings(s)).toEqual(s); // migrated settings pass validation, so saving them works
     db.close();
   });

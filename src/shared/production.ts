@@ -1,3 +1,5 @@
+import type { FailureInfo } from './failures';
+import type { MixProfileId } from './audioMix';
 import type { ApprovalState, PlatformMetadata, ProductionDestination } from './operations';
 // Video Factory: shared types for productions (topic → finished 9:16 MP4).
 
@@ -172,6 +174,8 @@ export interface Production {
   status: ProductionStatus;
   currentStep: StepName | null;
   error: string | null;
+  /** How the last failure was classified (set where it was thrown; null when not failed or unclassified). */
+  failure?: FailureInfo | null;
   sources: Source[];
   brief: Brief | null;
   storyboard: Storyboard | null;
@@ -342,13 +346,27 @@ export interface ProviderSettings {
   visuals: VisualProviderId[];
   /** 2 = settings already offered Openverse and graphics (0.6.1). */
   visualsRev?: number;
+  /** Retired: ComfyUI is a managed service now (Omnicore starts it on comfyPort). Kept so stored settings load. */
   comfyUrl: string;
+  /** The approved model used for production visuals (a checkpoint file name). */
   comfyCheckpoint: string;
+  /** ComfyUI installation folder (contains main.py); empty = detect (Stability Matrix). */
+  comfyInstallDir: string;
+  /** Port of the Omnicore-managed ComfyUI (not 8188, so it never collides with one you run yourself). */
+  comfyPort: number;
+  /** Generations at once (1 on a 12 GB GPU). */
+  comfyMaxConcurrent: number;
+  /** Free GPU memory required before a job is sent (MB). */
+  comfyMinFreeVramMb: number;
+  /** Unload models after each job so the LLM and voice get the GPU back. */
+  comfyUnloadAfterJob: boolean;
+  /** Start ComfyUI automatically when a production needs it. */
+  comfyAutoStart: boolean;
   /** Background music from the Sound Library: none, a random music track, or a chosen one. */
   musicMode: MusicMode;
   musicTrackId: number;
   musicVolume: number;
-  /** Transition sound effect at each scene cut (an SFX tagged "transition"). */
+  /** Retired: transition effects at scene cuts were removed (kept so stored settings still load; always false). */
   sfxTransitions: boolean;
   sfxVolume: number;
   /** CC BY-SA images: commercial use and edits are allowed, but the adapted work must be shared alike. Off = only CC0/PD/CC BY. */
@@ -380,10 +398,16 @@ export const DEFAULT_SETTINGS: ProviderSettings = {
   visualsRev: 2,
   comfyUrl: 'http://127.0.0.1:8188',
   comfyCheckpoint: '',
+  comfyInstallDir: '',
+  comfyPort: 8189,
+  comfyMaxConcurrent: 1,
+  comfyMinFreeVramMb: 7000,
+  comfyUnloadAfterJob: true,
+  comfyAutoStart: true,
   musicMode: 'auto',
   musicTrackId: 0,
   musicVolume: 0.12,
-  sfxTransitions: true,
+  sfxTransitions: false,
   sfxVolume: 0.35,
   allowShareAlike: false,
   ffmpegPath: ''
@@ -461,9 +485,11 @@ export interface SoundProfile {
   /** Find new licensed tracks automatically when the library has nothing for a story's mood. */
   autoDiscover: boolean;
   musicVolume: number;
+  /** Voice/music balance (see shared/audioMix.ts). Default: Balanced. */
+  mixProfile?: MixProfileId;
 }
 
-export const DEFAULT_SOUND_PROFILE: SoundProfile = { music: 'required', preferredMoods: [], introAccent: true, transitions: true, outroAccent: true, autoDiscover: true, musicVolume: 0.12 };
+export const DEFAULT_SOUND_PROFILE: SoundProfile = { music: 'required', preferredMoods: [], introAccent: false, transitions: false, outroAccent: false, autoDiscover: true, musicVolume: 0.12, mixProfile: 'balanced' };
 
 /** A per-production music choice that overrides automatic selection (recorded in the audit log). */
 export interface MusicOverride {
@@ -478,6 +504,10 @@ export type AudioTrackPatch = Partial<Pick<AudioTrack, 'title' | 'license' | 'at
 export const SOUND_GENERATORS = [
   { id: 'ambient-pad', kind: 'music', title: 'Ambient pad (generated)', tags: ['calm', 'ambient'] },
   { id: 'pulse-bed', kind: 'music', title: 'Pulse bed 100 BPM (generated)', tags: ['upbeat', 'tech'] },
+  // Phone-audible beds (most energy above 200 Hz, seamless 128 s loops). The two above are kept for the records of
+  // productions that used them, but measure as nearly inaudible on phone speakers and are no longer selected.
+  { id: 'soft-keys', kind: 'music', title: 'Soft keys 75 BPM (generated)', tags: ['calm', 'inspiring', 'ambient'] },
+  { id: 'bright-pulse', kind: 'music', title: 'Bright pulse 120 BPM (generated)', tags: ['upbeat', 'tech', 'tense'] },
   { id: 'whoosh', kind: 'sfx', title: 'Whoosh (generated)', tags: ['transition'] },
   { id: 'riser', kind: 'sfx', title: 'Riser (generated)', tags: ['transition', 'build'] },
   { id: 'pop', kind: 'sfx', title: 'Pop (generated)', tags: ['accent'] }

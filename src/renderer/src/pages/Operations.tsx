@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AutonomySettings, EngineStatus, Idea } from '../../../shared/operations';
 import { errorText } from '../components/ProductionDetail';
+import { ProductionFreezeCard } from '../components/ProductionFreeze';
+import { AutomationPanel } from '../components/AutomationPanel';
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
@@ -53,6 +55,8 @@ export function Operations() {
           {busy === 'discover' ? 'Discovering…' : 'Run discovery now'}
         </button>
       </header>
+      <ProductionFreezeCard />
+      <AutomationPanel />
       {error && <div className="banner error" role="alert">{error}</div>}
       {msg && <p className="muted small" role="status">{msg}</p>}
 

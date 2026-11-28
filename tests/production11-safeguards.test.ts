@@ -176,11 +176,81 @@ describe('unattended scheduling', () => {
     const { engine, queued } = make(env);
     const pid = engine.produceIdea(idea.id, 'engine', 'test');
     expect(() => engine.produceIdea(idea.id, 'user', 'again')).toThrow(/already has production/);
-    env.db.prepare(`UPDATE productions SET status = 'failed', error = 'Brief: Not enough evidence for a About a minute video', updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`).run(pid);
+    env.productions.update(pid, { status: 'failed', error: 'Brief: Not enough evidence for a About a minute video', failure: { kind: 'content', code: 'insufficient-evidence' } });
+    env.db.prepare(`UPDATE productions SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`).run(pid);
     queued.length = 0;
     engine.retryFailed(env.brand);
     expect(queued).toEqual([]);
     expect(env.ops.getIdea(idea.id).status).toBe('failed');
-    expect(env.ops.getIdea(idea.id).decision).toMatch(/not retried \(permanent\)/);
+    expect(env.ops.getIdea(idea.id).decision).toMatch(/not retried \(content: insufficient-evidence\)/);
+  });
+
+  // Production 21 (idea 93): the writer returned a script that failed validation. The old phrase list matched
+  // "never fall back" (part of every writer error) and marked the idea permanently failed.
+  it('retries writer failures by their type, whatever the message says', () => {
+    const env = setup();
+    const { idea } = env.ops.upsertIdea({ brandId: env.brand, topic: 'Has vibe coding open', headline: 'Has vibe coding open', mode: 'news', signals: sig('Has vibe coding open'), score: 90, scoreDetail: detail(90), fingerprint: 'w' });
+    const { engine, queued } = make(env);
+    const pid = engine.produceIdea(idea.id, 'engine', 'test');
+    const msg = 'Script: The script writer failed (Strata: Storyboard needs at least two fact scenes.). Autonomous productions never fall back to the deterministic writer; fix the writer and retry.';
+    env.productions.update(pid, { status: 'failed', error: msg, failure: { kind: 'writer', code: 'invalid-script' } });
+    env.db.prepare(`UPDATE productions SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`).run(pid);
+    queued.length = 0;
+    engine.retryFailed(env.brand, false); // writer down: wait, do not give up
+    expect(queued).toEqual([]);
+    expect(env.ops.getIdea(idea.id).status).toBe('selected');
+    engine.retryFailed(env.brand, true);
+    expect(queued).toEqual([pid]);
+    expect(env.ops.getIdea(idea.id).status).toBe('selected');
+  });
+
+  it('treats an unclassified failure as transient (bounded retries), never as permanent', () => {
+    const env = setup();
+    const { idea } = env.ops.upsertIdea({ brandId: env.brand, topic: 'An AI story', headline: 'An AI story', mode: 'news', signals: sig('An AI story'), score: 90, scoreDetail: detail(90), fingerprint: 'u' });
+    const { engine, queued } = make(env);
+    const pid = engine.produceIdea(idea.id, 'engine', 'test');
+    env.db.prepare(`UPDATE productions SET status = 'failed', error = 'Render: BLOCKED story is not licensed off topic', updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`).run(pid);
+    queued.length = 0;
+    engine.retryFailed(env.brand);
+    expect(queued).toEqual([pid]);
+  });
+
+  it('clears the classification when a production is retried', () => {
+    const env = setup();
+    const p = env.productions.create(env.brand, 't', null, '');
+    env.productions.update(p.id, { status: 'failed', error: 'x', failure: { kind: 'rights', code: 'music-not-licensed' } });
+    expect(env.productions.get(p.id).failure).toEqual({ kind: 'rights', code: 'music-not-licensed' });
+    env.productions.update(p.id, { status: 'queued', error: null });
+    expect(env.productions.get(p.id).failure).toBeNull();
+  });
+
+  it('reconciles a failed idea when its production completes after a manual retry (audited)', () => {
+    const env = setup();
+    const { idea } = env.ops.upsertIdea({ brandId: env.brand, topic: 'Has vibe coding open', headline: 'Has vibe coding open', mode: 'news', signals: sig('Has vibe coding open'), score: 90, scoreDetail: detail(90), fingerprint: 'r' });
+    const { engine } = make(env);
+    const pid = engine.produceIdea(idea.id, 'engine', 'test');
+    env.ops.decideIdea(idea.id, 'failed', 'not retried (permanent): old misclassification');
+    env.productions.update(pid, { status: 'completed', approval: 'awaiting_review' });
+    engine.reconcileIdea(pid);
+    const after = env.ops.getIdea(idea.id);
+    expect(after.status).toBe('produced');
+    expect(after.decision).toBe(`production ${pid} completed (awaiting_review) after manual recovery`);
+    expect(types(env)).toContain('idea.reconciled');
+    // A second pass changes nothing.
+    engine.retryFailed(env.brand);
+    expect(types(env).filter((x) => x === 'idea.reconciled')).toHaveLength(1);
+  });
+
+  it('never reconciles an idea that belongs to a different production', () => {
+    const env = setup();
+    const { idea } = env.ops.upsertIdea({ brandId: env.brand, topic: 'Story', headline: 'Story', mode: 'news', signals: sig('Story'), score: 90, scoreDetail: detail(90), fingerprint: 'o' });
+    const { engine } = make(env);
+    const pid = engine.produceIdea(idea.id, 'engine', 'test');
+    const other = env.productions.create(env.brand, 'Story', null, '');
+    env.db.prepare('UPDATE productions SET idea_id = ? WHERE id = ?').run(idea.id, other.id);
+    env.ops.decideIdea(idea.id, 'failed', 'x', pid);
+    env.productions.update(other.id, { status: 'completed' });
+    engine.reconcileIdea(other.id);
+    expect(env.ops.getIdea(idea.id).status).toBe('failed');
   });
 });

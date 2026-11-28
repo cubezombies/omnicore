@@ -12,9 +12,12 @@ import { isRelevantFile } from '../providers/visuals';
 import { claimProblems } from '../providers/writers';
 import { wordErrorRate, type Transcriber } from './asr';
 import { allowedFor } from '../audio/sound';
+import { audioGateFindings } from '../audio/analysis';
+import { AUDIO_GATE_ID } from '../../shared/audioMix';
+import { narrationTimeline } from '../media/timeline';
 
 /** Which pipeline steps a repair re-runs. */
-export type RepairAction = 'rescript' | 'shorten' | 'revisuals' | 'recaptions' | 'rerender' | 'metadata';
+export type RepairAction = 'rescript' | 'shorten' | 'lengthen' | 'revisuals' | 'recaptions' | 'rerender' | 'metadata';
 
 export interface QaContext {
   production: Production;
@@ -165,39 +168,6 @@ async function rmsDb(ffmpeg: string, file: string, start: number, dur: number, s
   return !m || m[1] === '-inf' ? -120 : Number(m[1]);
 }
 
-/**
- * Soundtrack checks on the rendered file: music must stay well under the voice (never obscure it) yet be audible,
- * and the video must end on a fade rather than a cut. Measured on the real mix, scene by scene.
- */
-export async function soundtrackFindings(ctx: QaContext, file: string, durationSec: number): Promise<QaCheckResult[]> {
-  const out: QaCheckResult[] = [];
-  const p = ctx.production;
-  const narr = p.assets.filter((a) => a.kind === 'narration').sort((a, b) => (a.sceneIndex ?? 0) - (b.sceneIndex ?? 0));
-  const music = p.assets.some((a) => a.kind === 'music');
-  const tail = await rmsDb(ctx.ffmpeg, file, Math.max(0, durationSec - 0.12), 0.12, ctx.signal);
-  out.push(finding('audio.ending', 'audio', 'minor', tail <= -35, `Last 0.12 s at ${tail.toFixed(0)} dB (${tail <= -35 ? 'fades out' : 'ends abruptly'}).`, { tailDb: tail }, 'rerender'));
-  if (!music || !narr.length) return out;
-  const voice: number[] = [];
-  const bed: number[] = [];
-  let offset = 0;
-  for (const a of narr) {
-    const speech = Number(a.meta.durationSec ?? 0);
-    const scene = Math.max(1, Math.round((speech + 0.35) * 30)) / 30;
-    if (speech > 1.2) voice.push(await rmsDb(ctx.ffmpeg, file, offset + speech / 2 - 0.5, 1, ctx.signal));
-    // The tail of each scene's pause carries only the music (and any transition effect).
-    if (scene - speech > 0.25 && offset + scene < durationSec - 1) bed.push(await rmsDb(ctx.ffmpeg, file, offset + speech + 0.1, Math.min(0.2, scene - speech - 0.12), ctx.signal));
-    offset += scene;
-  }
-  const med = (xs: number[]) => (xs.length ? [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] : NaN);
-  const v = med(voice);
-  const b = med(bed);
-  if (Number.isFinite(v) && Number.isFinite(b)) {
-    const gap = v - b;
-    out.push(finding('audio.balance', 'audio', 'major', gap >= 8, `Voice ${v.toFixed(0)} dB vs music ${b.toFixed(0)} dB between lines: ${gap.toFixed(0)} dB apart (music must sit at least 8 dB under the voice).`, { voiceDb: v, musicDb: b, gapDb: +gap.toFixed(1) }, 'rerender'));
-    out.push(finding('audio.music-audible', 'audio', 'minor', b >= -60, b >= -60 ? 'Music is audible between lines.' : `Music is almost silent (${b.toFixed(0)} dB).`, { musicDb: b }));
-  }
-  return out;
-}
 
 export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   const p = ctx.production;
@@ -352,13 +322,8 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
 
   // ---- captions -----------------------------------------------------------------
   if (sb && narration.length) {
-    let offset = 0;
-    const timeline = narration.map((a) => {
-      const d = Math.max(1, Math.round((Number(a.meta.durationSec) + 0.35) * 30)) / 30;
-      const t = { offset, duration: d, words: (a.meta.words as WordTiming[]) ?? [] };
-      offset += d;
-      return t;
-    });
+    const timeline = narrationTimeline(narration.map((a) => ({ audio: a.path, durationSec: Number(a.meta.durationSec), words: (a.meta.words as WordTiming[]) ?? [] })));
+    const offset = timeline.reduce((t, x) => t + x.duration, 0);
     const cues = buildCues(timeline);
     const captionWords = cues.flatMap((c) => c.text.split(/\s+/)).join(' ').toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '');
     const scriptWords = sb.scenes.map((s) => s.narration).join(' ').toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '');
@@ -374,12 +339,13 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
   const file = video ? path.join(ctx.dir, video.path) : '';
   if (!video || !fs.existsSync(file)) {
     out.push(finding('video.exists', 'video', 'critical', false, 'Rendered video is missing.', {}, 'rerender'));
+    out.push(finding(AUDIO_GATE_ID, 'audio', 'critical', false, 'Audio gate FAILED: there is no rendered video to analyse.'));
   } else {
     const info = await probe(ctx.ffmpeg, file);
     const specOk = info.video?.codec === 'h264' && info.video.width === 1080 && info.video.height === 1920 && info.audio?.codec === 'aac';
     out.push(finding('video.spec', 'video', 'critical', !!specOk, `${info.video?.codec ?? 'no video'} ${info.video?.width}×${info.video?.height}, audio ${info.audio?.codec ?? 'none'} ${info.audio?.sampleRate ?? ''} Hz.`, { ...info }, 'rerender'));
     const fmt = PRODUCTION_FORMATS[ctx.production.format ?? 'short'];
-    out.push(finding('video.duration', 'video', 'major', info.durationSec >= fmt.minSec && info.durationSec <= fmt.maxSec, `Duration ${info.durationSec.toFixed(1)} s (target ${fmt.minSec}–${fmt.maxSec} s for ${fmt.label}).`, { durationSec: info.durationSec, format: ctx.production.format ?? 'short' }, info.durationSec > fmt.maxSec ? 'shorten' : undefined));
+    out.push(finding('video.duration', 'video', 'major', info.durationSec >= fmt.minSec && info.durationSec <= fmt.maxSec, `Duration ${info.durationSec.toFixed(1)} s (target ${fmt.minSec}–${fmt.maxSec} s for ${fmt.label}).`, { durationSec: info.durationSec, format: ctx.production.format ?? 'short' }, info.durationSec > fmt.maxSec ? 'shorten' : info.durationSec < fmt.minSec && (ctx.production.format ?? 'short') === 'standard' ? 'lengthen' : undefined));
     const decodeErr = (await runFfmpegCapture(ctx.ffmpeg, ['-v', 'error', '-i', file, '-f', 'null', '-'], ctx.signal)).trim();
     out.push(finding('video.integrity', 'video', 'critical', decodeErr === '', decodeErr ? `Decoding errors: ${decodeErr.slice(0, 300)}` : 'Full decode completed without errors.', {}, 'rerender'));
     out.push(finding('video.faststart', 'video', 'minor', isFastStart(file), isFastStart(file) ? 'Streamable (moov before mdat).' : 'Not streamable (moov after mdat).', {}, 'rerender'));
@@ -389,7 +355,11 @@ export async function runQaChecks(ctx: QaContext): Promise<QaCheckResult[]> {
     const peak = Number(/Peak:\s+(-?[\d.]+) dBFS/.exec(summary)?.[1]);
     out.push(finding('audio.loudness', 'audio', 'major', Number.isFinite(lufs) && lufs >= -19 && lufs <= -13, `Integrated loudness ${Number.isFinite(lufs) ? lufs.toFixed(1) : '?'} LUFS (target −16 ±3).`, { lufs }, 'rerender'));
     out.push(finding('audio.clipping', 'audio', 'major', Number.isFinite(peak) && peak <= -0.5, `True peak ${Number.isFinite(peak) ? peak.toFixed(1) : '?'} dBTP (must stay below −0.5).`, { truePeak: peak }, 'rerender'));
-    out.push(...(await soundtrackFindings(ctx, file, info.durationSec)));
+    // The mandatory audio gate: measured on the decoded final render and its stems, never on database records.
+    const tail = await rmsDb(ctx.ffmpeg, file, Math.max(0, info.durationSec - 0.12), 0.12, ctx.signal);
+    out.push(finding('audio.ending', 'audio', 'minor', tail <= -35, `Last 0.12 s at ${tail.toFixed(0)} dB (${tail <= -35 ? 'fades out' : 'ends abruptly'}).`, { tailDb: tail }, 'rerender'));
+    const g = await audioGateFindings({ ffmpeg: ctx.ffmpeg, dir: ctx.dir, finalFile: file, audioCodec: info.audio?.codec, sampleRate: info.audio?.sampleRate, durationSec: info.durationSec, hasMusicAsset: p.assets.some((a) => a.kind === 'music'), signal: ctx.signal });
+    out.push(...g.findings);
   }
 
   // ---- metadata + destinations -----------------------------------------------------

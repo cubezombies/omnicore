@@ -452,6 +452,190 @@ export const MIGRATIONS: string[] = [
       p.channel_id
     FROM production_assets a JOIN audio_library l ON a.path = 'library:' || l.file JOIN productions p ON p.id = a.production_id
     WHERE l.rights_status = 'quarantined';
+  `,
+  // v14: publication history is permanent. Deleting a production used to cascade-delete its publications (the record
+  // of production 19's TikTok post was lost that way). The table is rebuilt without the cascade, with separate upload,
+  // publish, failure and deletion times, the production number/topic and account handle at the time, and the uploaded
+  // file's hash. Timestamps are backfilled from the audit log, and publications that the audit log proves happened
+  // but whose rows were lost are restored from it (marked as restored).
+  `
+  CREATE TABLE publications_v14 (
+    id                 INTEGER PRIMARY KEY,
+    production_id      INTEGER REFERENCES productions(id) ON DELETE SET NULL,
+    production_number  INTEGER NOT NULL DEFAULT 0,
+    production_topic   TEXT NOT NULL DEFAULT '',
+    platform           TEXT NOT NULL CHECK (platform IN ('tiktok','youtube','instagram')),
+    account_id         INTEGER REFERENCES platform_accounts(id) ON DELETE SET NULL,
+    account_handle     TEXT NOT NULL DEFAULT '',
+    privacy_requested  TEXT NOT NULL,
+    privacy_applied    TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'uploading' CHECK (status IN ('uploading','processing','published','failed')),
+    remote_id          TEXT NOT NULL DEFAULT '',
+    url                TEXT NOT NULL DEFAULT '',
+    detail             TEXT NOT NULL DEFAULT '',
+    approved_by        TEXT NOT NULL DEFAULT '',
+    render_sha256      TEXT NOT NULL DEFAULT '',
+    uploaded_at        TEXT,
+    published_at       TEXT,
+    failed_at          TEXT,
+    deleted_at         TEXT,
+    deletion_source    TEXT NOT NULL DEFAULT '' CHECK (deletion_source IN ('','user','platform')),
+    deletion_note      TEXT NOT NULL DEFAULT '',
+    restored_from      TEXT NOT NULL DEFAULT '',
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  INSERT INTO publications_v14 (id, production_id, production_number, production_topic, platform, account_id, account_handle, privacy_requested, privacy_applied, status, remote_id, url, detail, approved_by, uploaded_at, published_at, failed_at, created_at, updated_at)
+    SELECT x.id, x.production_id, x.production_id, COALESCE(p.topic, ''), x.platform, x.account_id, COALESCE(a.handle, ''), x.privacy_requested, x.privacy_applied, x.status, x.remote_id, x.url, x.detail, x.approved_by,
+      CASE WHEN x.remote_id <> '' THEN COALESCE((SELECT e.ts FROM audit_events e WHERE e.type = 'publish.submitted' AND e.production_id = x.production_id AND json_extract(e.data, '$.remoteId') = x.remote_id ORDER BY e.id LIMIT 1), x.created_at) END,
+      CASE WHEN x.status = 'published' THEN COALESCE((SELECT e.ts FROM audit_events e WHERE e.type = 'publish.verified' AND e.production_id = x.production_id AND json_extract(e.data, '$.remoteId') = x.remote_id ORDER BY e.id LIMIT 1), x.updated_at) END,
+      CASE WHEN x.status = 'failed' THEN x.updated_at END,
+      x.created_at, x.updated_at
+    FROM publications x LEFT JOIN productions p ON p.id = x.production_id LEFT JOIN platform_accounts a ON a.id = x.account_id;
+  DROP TABLE publications;
+  ALTER TABLE publications_v14 RENAME TO publications;
+  CREATE INDEX idx_publications_production ON publications(production_id);
+  INSERT INTO publications (production_id, production_number, production_topic, platform, account_id, account_handle, privacy_requested, privacy_applied, status, remote_id, url, detail, approved_by, uploaded_at, published_at, restored_from, created_at, updated_at)
+    SELECT
+      (SELECT id FROM productions WHERE id = v.production_id),
+      v.production_id,
+      COALESCE((SELECT topic FROM productions WHERE id = v.production_id), (SELECT json_extract(d.data, '$.topic') FROM audit_events d WHERE d.type = 'production.deleted' AND d.production_id = v.production_id ORDER BY d.id DESC LIMIT 1), ''),
+      json_extract(v.data, '$.platform'),
+      (SELECT id FROM platform_accounts WHERE id = json_extract(st.data, '$.accountId')),
+      COALESCE(json_extract(st.data, '$.handle'), ''),
+      COALESCE(json_extract(st.data, '$.privacy'), ''),
+      COALESCE(json_extract(sb.data, '$.appliedPrivacy'), ''),
+      'published',
+      json_extract(v.data, '$.remoteId'),
+      COALESCE(json_extract(v.data, '$.url'), ''),
+      COALESCE(json_extract(v.data, '$.detail'), ''),
+      COALESCE(json_extract(st.data, '$.approvedBy'), st.actor),
+      sb.ts, v.ts, 'audit:' || v.id, COALESCE(st.ts, v.ts), v.ts
+    FROM audit_events v
+    LEFT JOIN audit_events sb ON sb.id = (SELECT id FROM audit_events WHERE type = 'publish.submitted' AND production_id = v.production_id AND json_extract(data, '$.remoteId') = json_extract(v.data, '$.remoteId') ORDER BY id LIMIT 1)
+    LEFT JOIN audit_events st ON st.id = (SELECT id FROM audit_events WHERE type = 'publish.started' AND production_id = v.production_id AND id < COALESCE(sb.id, v.id) ORDER BY id DESC LIMIT 1)
+    WHERE v.type = 'publish.verified' AND json_extract(v.data, '$.remoteId') IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM publications x WHERE x.remote_id = json_extract(v.data, '$.remoteId'));
+  `,
+  // v15: QA history is permanent, and failures carry a typed classification.
+  // Deleting a production used to cascade-delete its QA runs and findings (production 19's three passed runs were lost),
+  // and because qa_runs had no AUTOINCREMENT the next runs reused their ids (production 21's runs became 37 and 38).
+  // qa_runs is rebuilt with production_id ON DELETE SET NULL, AUTOINCREMENT, and a snapshot of what was checked:
+  // business, production number and topic, the render's SHA-256 and the qa.run audit event. A trigger stamps
+  // production_deleted_at before a production row goes. The id sequence is seeded from the number of qa.run audit
+  // events (every run ever saved wrote one), so no id that was ever used is handed out again.
+  // Rebuild order avoids SQLite's implicit DELETE on DROP TABLE (which fires ON DELETE CASCADE into child tables):
+  // the child table is copied and its original dropped before the parent is dropped.
+  `
+  ALTER TABLE productions ADD COLUMN failure TEXT;
+  CREATE TABLE qa_runs_v15 (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    production_id          INTEGER REFERENCES productions(id) ON DELETE SET NULL,
+    business_id            INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+    production_number      INTEGER NOT NULL DEFAULT 0,
+    production_topic       TEXT NOT NULL DEFAULT '',
+    render_sha256          TEXT NOT NULL DEFAULT '',
+    audit_event_id         INTEGER,
+    production_deleted_at  TEXT,
+    round                  INTEGER NOT NULL,
+    status                 TEXT NOT NULL CHECK (status IN ('passed','failed','blocked')),
+    summary                TEXT NOT NULL DEFAULT '{}',
+    started_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    finished_at            TEXT
+  );
+  INSERT INTO qa_runs_v15 (id, production_id, business_id, production_number, production_topic, render_sha256, audit_event_id, round, status, summary, started_at, finished_at)
+    SELECT r.id, r.production_id, p.channel_id, r.production_id, COALESCE(p.topic, ''),
+      COALESCE((SELECT json_extract(e.data, '$.sha256') FROM audit_events e WHERE e.type = 'render.output' AND e.production_id = r.production_id AND e.ts <= r.started_at ORDER BY e.id DESC LIMIT 1), ''),
+      (SELECT e.id FROM audit_events e WHERE e.type = 'qa.run' AND e.production_id = r.production_id AND e.ts >= r.started_at AND json_extract(e.data, '$.round') = r.round ORDER BY e.id LIMIT 1),
+      r.round, r.status, r.summary, r.started_at, r.finished_at
+    FROM qa_runs r LEFT JOIN productions p ON p.id = r.production_id;
+  CREATE TABLE qa_findings_v15 (
+    id         INTEGER PRIMARY KEY,
+    qa_run_id  INTEGER NOT NULL REFERENCES qa_runs_v15(id) ON DELETE CASCADE,
+    check_id   TEXT NOT NULL,
+    category   TEXT NOT NULL,
+    severity   TEXT NOT NULL CHECK (severity IN ('critical','major','minor','info')),
+    passed     INTEGER NOT NULL,
+    message    TEXT NOT NULL,
+    evidence   TEXT NOT NULL DEFAULT '{}',
+    repair     TEXT NOT NULL DEFAULT ''
+  );
+  INSERT INTO qa_findings_v15 SELECT id, qa_run_id, check_id, category, severity, passed, message, evidence, repair FROM qa_findings;
+  DROP TABLE qa_findings;
+  DROP TABLE qa_runs;
+  ALTER TABLE qa_runs_v15 RENAME TO qa_runs;
+  ALTER TABLE qa_findings_v15 RENAME TO qa_findings;
+  CREATE INDEX idx_qa_findings_run ON qa_findings(qa_run_id);
+  CREATE INDEX idx_qa_runs_production ON qa_runs(production_id);
+  INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'qa_runs', MAX(COALESCE((SELECT MAX(id) FROM qa_runs), 0), (SELECT COUNT(*) FROM audit_events WHERE type = 'qa.run'))
+    WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'qa_runs');
+  UPDATE sqlite_sequence SET seq = MAX(seq, (SELECT COUNT(*) FROM audit_events WHERE type = 'qa.run')) WHERE name = 'qa_runs';
+  CREATE TRIGGER qa_runs_keep_on_production_delete BEFORE DELETE ON productions
+  BEGIN
+    UPDATE qa_runs SET production_deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE production_id = OLD.id;
+  END;
+  `,
+  // v16: production jobs and managed ComfyUI. Every run of a production is a job with an initiator, a lifecycle
+  // (queued → running → succeeded/failed/cancelled/interrupted/stalled/expired) and a heartbeat; a unique index
+  // allows one active job per production. ComfyUI generations are recorded with their business, production, workflow,
+  // model and seed (provenance); models are only used for productions after an explicit, recorded licence approval.
+  // New tables only: no existing record is changed.
+  `
+  CREATE TABLE production_jobs (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    production_id      INTEGER REFERENCES productions(id) ON DELETE SET NULL,
+    production_number  INTEGER NOT NULL,
+    business_id        INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+    kind               TEXT NOT NULL CHECK (kind IN ('produce','retry','rerun','revoice')),
+    from_step          TEXT,
+    initiator          TEXT NOT NULL CHECK (initiator IN ('user','scheduler','automation','agent','recovery','system')),
+    status             TEXT NOT NULL CHECK (status IN ('queued','running','succeeded','failed','cancelled','interrupted','stalled','expired')),
+    reason             TEXT NOT NULL DEFAULT '',
+    error              TEXT NOT NULL DEFAULT '',
+    failure_kind       TEXT NOT NULL DEFAULT '',
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    started_at         TEXT,
+    heartbeat_at       TEXT,
+    finished_at        TEXT
+  );
+  CREATE UNIQUE INDEX production_jobs_one_active ON production_jobs(production_id) WHERE status IN ('queued','running');
+  CREATE INDEX production_jobs_business ON production_jobs(business_id, id);
+  CREATE TABLE comfy_models (
+    file         TEXT PRIMARY KEY,
+    status       TEXT NOT NULL CHECK (status IN ('approved','revoked')),
+    license      TEXT NOT NULL,
+    license_url  TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT '',
+    sha256       TEXT NOT NULL DEFAULT '',
+    decided_by   TEXT NOT NULL,
+    decided_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE TABLE comfy_generations (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_id        INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+    production_id      INTEGER REFERENCES productions(id) ON DELETE SET NULL,
+    production_number  INTEGER,
+    job_id             INTEGER,
+    scene_index        INTEGER,
+    prompt_id          TEXT NOT NULL DEFAULT '',
+    workflow_id        TEXT NOT NULL,
+    workflow_sha256    TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    seed               INTEGER NOT NULL,
+    steps              INTEGER NOT NULL,
+    width              INTEGER NOT NULL,
+    height             INTEGER NOT NULL,
+    prompt             TEXT NOT NULL,
+    negative           TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
+    error              TEXT NOT NULL DEFAULT '',
+    output_path        TEXT NOT NULL DEFAULT '',
+    output_sha256      TEXT NOT NULL DEFAULT '',
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    finished_at        TEXT
+  );
+  CREATE INDEX comfy_generations_business ON comfy_generations(business_id, id);
   `
 ];
 

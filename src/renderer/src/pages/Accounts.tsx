@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Business } from '../../../shared/business';
 import { PLATFORMS, PLATFORM_LABELS, type AuditVerification, type BrandDestination, type Incident, type Platform, type PlatformAccount, type PlatformAppSummary, type Privacy } from '../../../shared/operations';
 import { errorText } from '../components/ProductionDetail';
+import { PublicationHistory } from '../components/PublicationStatus';
+import type { Publication } from '../../../shared/operations';
 
 export function Accounts(props: { business: Business }) {
   const [accounts, setAccounts] = useState<PlatformAccount[]>([]);
@@ -110,6 +112,7 @@ export function Accounts(props: { business: Business }) {
       </ul>
 
 
+      <BusinessPublicationHistory />
       <h2>Rights &amp; audit</h2>
       <div className="prod-actions">
         <button className="secondary" onClick={() => act(async () => setVerify(await window.api.verifyAudit()))}>Verify audit ledger</button>
@@ -165,5 +168,38 @@ function AppForm({ app, onSaved, onError }: { app: PlatformAppSummary; onSaved: 
         <div className="prod-actions"><button className="secondary" onClick={save}>Save</button></div>
       </div>
     </li>
+  );
+}
+
+/** Every publication of this business, including posts whose production was later deleted. */
+function BusinessPublicationHistory() {
+  const [pubs, setPubs] = useState<Publication[] | null>(null);
+  const load = useCallback(() => void window.api.publicationHistory().then(setPubs).catch(() => setPubs([])), []);
+  useEffect(load, [load]);
+  if (!pubs) return null;
+  return (
+    <section>
+      <h2>Publication history</h2>
+      <p className="muted small">Every upload attempt and post, newest first. Records are never overwritten or removed, even when the production is deleted.</p>
+      {pubs.length === 0 ? (
+        <p className="empty">Nothing has been uploaded yet.</p>
+      ) : (
+        <>
+          {pubs.some((x) => x.productionId === null) && <p className="small muted">Entries marked “production deleted” belong to productions that no longer exist; the record is kept as history.</p>}
+          {Object.entries(
+            pubs.reduce<Record<string, Publication[]>>((acc, x) => {
+              const k = `#${x.productionNumber} ${x.productionTopic}${x.productionId === null ? ' (production deleted)' : ''}`;
+              (acc[k] ??= []).push(x);
+              return acc;
+            }, {})
+          ).map(([k, list]) => (
+            <div key={k} className="card">
+              <h3>{k}</h3>
+              <PublicationHistory pubs={list} onChanged={load} />
+            </div>
+          ))}
+        </>
+      )}
+    </section>
   );
 }

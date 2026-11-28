@@ -1,6 +1,7 @@
 // Shared domain model: used by main (authoritative) and renderer (display).
 import type { Business, BusinessDraft, BusinessPatch, Topic, TopicDraft } from './business';
 import type { AnalyticsReport, AuditEvent, AuditVerification, AutonomySettings, BrandDestination, EngineStatus, Idea, Incident, Platform, PlatformAccount, PlatformAppSummary, Privacy, Publication, QaRun, TikTokCreatorInfo, TikTokPostOptions } from './operations';
+import type { DestinationStatus } from './publicationStatus';
 import type {
   AudioKind,
   AudioTrack,
@@ -22,6 +23,11 @@ import type {
   SoundProfile,
   MusicOverride
 } from './production';
+import type { ProductionFreeze } from './operations';
+import type { HistoryEntry, TrackRightsDetails } from './rights';
+import type { ContextualEffect, ProductionEffects } from './audioMix';
+import type { AutomationHalt, BreakerStatus, ProductionJob, ReliabilitySettings } from './automation';
+import type { ComfyDetection, ComfyGeneration, ComfyModel, ComfyStatus, GpuInfo } from './comfy';
 
 export const STAGES = ['idea', 'research', 'script', 'production', 'review', 'published'] as const;
 export type Stage = (typeof STAGES)[number];
@@ -172,6 +178,26 @@ export interface AppApi {
   getAutonomy(): Promise<AutonomySettings>;
   saveAutonomy(s: AutonomySettings): Promise<AutonomySettings>;
   engineStatus(): Promise<EngineStatus>;
+  /** Managed ComfyUI: runtime state, GPU, the generation in progress for this business and the selected model. */
+  comfyStatus(): Promise<{ runtime: ComfyStatus; gpu: GpuInfo | null; progress: { generationId: number; fraction: number; detail: string } | null; model: string }>;
+  /** Find the installation, Python/CUDA and models, with guided setup for anything missing (nothing is downloaded). */
+  comfyDetect(): Promise<ComfyDetection>;
+  comfyStart(): Promise<ComfyStatus>;
+  comfyStop(): Promise<ComfyStatus>;
+  comfyRestart(): Promise<ComfyStatus>;
+  comfyModels(): Promise<ComfyModel[]>;
+  /** Approve a model for production visuals with its licence (recorded and audited). */
+  comfyApproveModel(file: string, license: string, licenseUrl?: string, note?: string): Promise<ComfyModel>;
+  comfyRevokeModel(file: string, note?: string): Promise<void>;
+  /** Generation history of the active business only. */
+  comfyHistory(): Promise<ComfyGeneration[]>;
+  /** Recent production actions of the active business (newest first): who did what, with state before and after. */
+  productionActivity(limit?: number): Promise<AuditEvent[]>;
+  /** Automation halt, circuit breakers, recent jobs and reliability limits of the active business. */
+  automationStatus(): Promise<{ halt: AutomationHalt | null; breakers: BreakerStatus[]; jobs: ProductionJob[]; reliability: ReliabilitySettings }>;
+  /** Resume automation after a gate halted it (you have reviewed the failure). */
+  clearAutomationHalt(note?: string): Promise<void>;
+  saveReliability(r: ReliabilitySettings): Promise<ReliabilitySettings>;
   runDiscoveryNow(): Promise<{ created: number; candidates: number }>;
   listIdeas(): Promise<Idea[]>;
   /** Start a production from an idea. Off-topic ideas are refused ("OFF_TOPIC: ...") unless confirmOffTopic is true. */
@@ -179,6 +205,16 @@ export interface AppApi {
   ideaRelevance(ideaId: number): Promise<{ onTopic: boolean; keywordHits: string[]; anchorHits: string[]; reason: string }>;
   /** The active business's sound profile (music required, moods, accents, discovery, volume). */
   getSoundProfile(): Promise<SoundProfile>;
+  /** Contextual effects approved for one production (none by default). */
+  getProductionEffects(productionId: number): Promise<ProductionEffects | null>;
+  /** Approve (or clear, with an empty list) contextual effects for one production; each must pass the rights check. */
+  setProductionEffects(productionId: number, effects: ContextualEffect[]): Promise<ProductionEffects | null>;
+  /** Production freeze (audio pipeline restoration): state, the latest verification render and the release. */
+  productionFreeze(): Promise<ProductionFreeze>;
+  /** Render the audio verification video and record the result (creates no production). */
+  verifyAudioPipeline(): Promise<ProductionFreeze>;
+  /** Resume production. Refused unless the verification render passed on the current audio pipeline. */
+  releaseProduction(note: string): Promise<ProductionFreeze>;
   saveSoundProfile(s: SoundProfile): Promise<SoundProfile>;
   /** A manual music choice for one production (audited). Re-render to apply. */
   getMusicOverride(productionId: number): Promise<MusicOverride | null>;
@@ -201,12 +237,22 @@ export interface AppApi {
   verifyAudit(): Promise<AuditVerification>;
   auditEvents(productionId: number): Promise<AuditEvent[]>;
   listIncidents(): Promise<Incident[]>;
+  /** Full rights and licensing evidence for one sound (read-only). */
+  soundRightsDetails(trackId: number): Promise<TrackRightsDetails>;
+  /** Rights & Compliance history of the active business (read-only). */
+  rightsHistory(): Promise<HistoryEntry[]>;
   addIncident(kind: Incident['kind'], description: string, productionId: number | null, assetKey: string): Promise<Incident>;
   resolveIncident(id: number): Promise<void>;
   platformApps(): Promise<PlatformAppSummary[]>;
   savePlatformApp(platform: Platform, app: { clientId?: string; clientSecret?: string; redirectPort?: number; accessToken?: string; publicVideoBaseUrl?: string }): Promise<PlatformAppSummary>;
   connectAccount(accountId: number): Promise<PlatformAccount>;
   publications(productionId: number): Promise<Publication[]>;
+  /** Every publication of the active business, including those whose production was deleted (newest first). */
+  publicationHistory(): Promise<Publication[]>;
+  /** Publication status per destination for every production of the active business. */
+  publicationOverview(): Promise<{ productionId: number; contentId: number | null; topic: string; statuses: DestinationStatus[] }[]>;
+  /** Record that a post was deleted on the platform (by you). The record and its history are kept. */
+  recordPublicationDeletion(publicationId: number, note?: string): Promise<Publication>;
   publishBlockers(productionId: number): Promise<Record<string, string[]>>;
   publishProduction(productionId: number, platform: Platform, tiktok?: TikTokPostOptions): Promise<Publication>;
   tiktokCreatorInfo(productionId: number): Promise<TikTokCreatorInfo>;
@@ -274,11 +320,29 @@ export const IPC = {
   getAutonomy: 'ops:autonomy:get',
   saveAutonomy: 'ops:autonomy:save',
   engineStatus: 'ops:engine:status',
+  comfyStatus: 'comfy:status',
+  comfyDetect: 'comfy:detect',
+  comfyStart: 'comfy:start',
+  comfyStop: 'comfy:stop',
+  comfyRestart: 'comfy:restart',
+  comfyModels: 'comfy:models',
+  comfyApproveModel: 'comfy:models:approve',
+  comfyRevokeModel: 'comfy:models:revoke',
+  comfyHistory: 'comfy:history',
+  productionActivity: 'ops:activity',
+  automationStatus: 'ops:automation:status',
+  clearAutomationHalt: 'ops:automation:clearHalt',
+  saveReliability: 'ops:reliability:save',
   runDiscoveryNow: 'ops:discovery:run',
   listIdeas: 'ops:ideas:list',
   produceIdea: 'ops:ideas:produce',
   ideaRelevance: 'ops:ideas:relevance',
   getSoundProfile: 'sound:profile:get',
+  getProductionEffects: 'sound:effects:get',
+  setProductionEffects: 'sound:effects:set',
+  productionFreeze: 'ops:freeze:get',
+  verifyAudioPipeline: 'ops:freeze:verify',
+  releaseProduction: 'ops:freeze:release',
   saveSoundProfile: 'sound:profile:save',
   getMusicOverride: 'sound:override:get',
   setMusicOverride: 'sound:override:set',
@@ -299,12 +363,17 @@ export const IPC = {
   verifyAudit: 'audit:verify',
   auditEvents: 'audit:events',
   listIncidents: 'incidents:list',
+  soundRightsDetails: 'sound:rights:details',
+  rightsHistory: 'rights:history',
   addIncident: 'incidents:add',
   resolveIncident: 'incidents:resolve',
   platformApps: 'publishing:apps',
   savePlatformApp: 'publishing:saveApp',
   connectAccount: 'accounts:connect',
   publications: 'publishing:list',
+  publicationHistory: 'publishing:history',
+  publicationOverview: 'publishing:overview',
+  recordPublicationDeletion: 'publishing:recordDeletion',
   publishBlockers: 'publishing:blockers',
   publishProduction: 'publishing:publish',
   tiktokCreatorInfo: 'publishing:tiktok-creator',

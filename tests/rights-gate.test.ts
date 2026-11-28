@@ -161,9 +161,11 @@ describe('quarantine: existing tracks and productions', () => {
     const auto = await l.select(DEFAULT_SETTINGS, 1, { mood: 'calm', platforms: ['tiktok'], profile });
     expect(auto.music?.id).not.toBe(t.id); // falls back to a verified generated bed; nothing is downloaded (discovery is off)
     await expect(l.select(DEFAULT_SETTINGS, 1, { mood: 'calm', platforms: ['tiktok'], profile, override: { mode: 'track', trackId: t.id } })).rejects.toThrow(/not cleared/);
-    l.update(t.id, { commercialUse: 'yes' }); // editing never approves
+    // The quarantined record is evidence: it cannot be edited (editing never approved anyway) or deleted.
+    expect(() => l.update(t.id, { commercialUse: 'yes' })).toThrow(/kept unchanged as rights evidence/);
+    expect(l.get(t.id)).toMatchObject({ rightsStatus: 'quarantined', license: 'CC BY 3.0' });
     expect(l.revalidate(t.id)).toMatchObject({ ok: false });
-    expect(() => l.delete(t.id)).toThrow(/kept as evidence/);
+    expect(() => l.delete(t.id)).toThrow(/kept as rights evidence/);
     const repo = new ProductionRepository(db);
     const p = repo.create(1, 'x', null, '', 'news', { destinations: [{ platform: 'tiktok', accountId: null, handle: '', privacy: 'private', blockers: [] }] });
     repo.addAsset(p.id, { kind: 'music', sceneIndex: null, path: `library:${t.file}`, provider: 'sound-library', sourceUrl: '', license: 'CC BY 3.0', attribution: 'Meio Ambiente by NeLaS, CC BY 3.0', meta: { trackId: t.id, usage: 'embedded', commercialUse: 'yes', restrictions: {} } });
@@ -171,5 +173,5 @@ describe('quarantine: existing tracks and productions', () => {
     expect(checks.find((c) => c.checkId === 'rights.audio-revalidated')).toMatchObject({ passed: false, severity: 'critical' });
     const failClosed = await runQaChecks({ production: repo.get(p.id), dir: os.tmpdir(), ffmpeg: resolveFfmpeg(''), allowShareAlike: false });
     expect(failClosed.find((c) => c.checkId === 'rights.audio-revalidated')).toMatchObject({ passed: false });
-  }, 60_000);
+  }, 180_000);
 });

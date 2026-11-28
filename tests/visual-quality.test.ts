@@ -13,6 +13,7 @@ import { sceneMotion } from '../src/main/pipeline/runner';
 import { openDatabase } from '../src/main/db/database';
 import { ProductionRepository } from '../src/main/db/productions';
 import type { Brief, ProductionAsset, Scene, Source } from '../src/shared/production';
+import { testAudio } from './helpers/audioPlan';
 
 const tmp = () => fs.mkdtempSync(path.join(process.env.AIMO_TEST_TMP ?? os.tmpdir(), 'vq-'));
 const brief: Brief = { topic: 'speculative decoding', title: 't', angle: '', audience: '', keyFacts: [], targetSeconds: 80, claims: [] };
@@ -158,7 +159,8 @@ describe('motion and transitions', () => {
     const imgs = [img(0, 'openverse', 'photo'), img(1, 'graphics', 'stat'), img(2, 'graphics', 'steps'), img(3, 'graphics', 'sources')];
     expect(imgs.map((_, i) => sceneMotion(imgs, i))).toEqual([{ motion: 'in' }, { motion: 'still', transition: 'fade' }, { motion: 'still', transition: 'slideleft' }, { motion: 'still', transition: 'circleopen' }]);
     const scenes = [2, 3, 4].map((d, i) => ({ image: `i${i}.png`, audio: `a${i}.wav`, durationSec: d, ...sceneMotion(imgs, i) }));
-    const fc = buildRenderArgs({ scenes, captions: 'c.ass', output: 'o.mp4' })[buildRenderArgs({ scenes, captions: 'c.ass', output: 'o.mp4' }).indexOf('-filter_complex') + 1];
+    const args0 = buildRenderArgs({ scenes, captions: 'c.ass', output: 'o.mp4', audio: testAudio(3) });
+    const fc = args0[args0.indexOf('-filter_complex') + 1];
     expect(fc).toContain(`xfade=transition=fade:duration=${XFADE_SEC}:offset=2.0000`);
     expect(fc).toContain(`xfade=transition=slideleft:duration=${XFADE_SEC}:offset=5.0000[vc]`);
     expect(fc).toContain(`d=${Math.round((2 + XFADE_SEC) * 30)}:`); // first picture overlaps the next
@@ -208,18 +210,18 @@ describe('timelines, build-up animation and graphic attribution', () => {
       ],
       captions: 'c.ass',
       output: 'o.mp4',
-      music: { path: 'm.m4a', volume: 0.12 },
-      sfx: { path: 'w.m4a', volume: 0.3, atSec: [2.7] }
+      audio: testAudio(2, { sfx: [{ path: 'w.m4a', atSec: [2.7] }] })
     });
     const inputs = args.filter((_, i) => args[i - 1] === '-i');
-    expect(inputs).toEqual(['a.png', 'b1.png', 'b2.png', 'b3.png', 'a.wav', 'b.wav', 'm.m4a', 'w.m4a']);
+    expect(inputs).toEqual(['a.png', 'b1.png', 'b2.png', 'b3.png', 'a.wav', 'b.wav', 'm.m4a', 'stems/duck-envelope.wav', 'w.m4a']);
     const fc = args[args.indexOf('-filter_complex') + 1];
     expect(fc).toContain('[1:v]scale');
     expect(fc).toContain('[v1f0][v1f1]xfade=transition=fade:duration=0.2');
     expect(fc).toContain('[4:a]aresample'); // first narration
-    expect(fc).toContain('[6:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,loudnorm=I=-30'); // music normalised
-    expect(fc).toContain('[7:a]aresample'); // effect
-    expect(fc).toContain('alimiter=limit=0.85');
+    expect(fc).toContain('[6:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim'); // music
+    expect(fc).toContain('[7:a]aresample=48000,pan=stereo|c0=c0|c1=c0'); // ducking envelope, channel copied (no -3 dB upmix)
+    expect(fc).toContain('[8:a]aresample'); // effect
+    expect(fc).toContain('alimiter=limit=0.841');
   });
 
   it('flags a graphic that credits a source its scene does not cite', () => {
@@ -247,12 +249,16 @@ describe('real render of a build-up scene', () => {
     for (let i = 0; i < 4; i++) await runFfmpeg(ff, ['-f', 'lavfi', '-i', `color=c=${color[i]}:s=1080x1920:d=1`, '-frames:v', '1', '-update', '1', `f${i}.png`], { cwd: dir });
     for (const n of ['a', 'b']) await runFfmpeg(ff, ['-f', 'lavfi', '-i', 'sine=f=220:d=2.5', `${n}.wav`], { cwd: dir });
     await runFfmpeg(ff, ['-f', 'lavfi', '-i', 'sine=f=440:d=4', '-c:a', 'aac', 'm.m4a'], { cwd: dir });
+    fs.mkdirSync(path.join(dir, 'stems'), { recursive: true });
+    const { writeWav } = await import('../src/main/audio/mix');
+    writeWav(path.join(dir, 'stems', 'duck-envelope.wav'), new Float32Array(8000 * 6).fill(0.5), 8000);
     fs.writeFileSync(path.join(dir, 'c.ass'), '[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n');
-    const plan = { scenes: [{ image: 'f0.png', audio: 'a.wav', durationSec: 2.6 }, { image: 'f3.png', frames: ['f1.png', 'f2.png', 'f3.png'], audio: 'b.wav', durationSec: 3.0, transition: 'fade' as const, motion: 'still' as const }], captions: 'c.ass', output: 'out.mp4', music: { path: 'm.m4a', volume: 0.12 } };
+    const plan = { scenes: [{ image: 'f0.png', audio: 'a.wav', durationSec: 2.6 }, { image: 'f3.png', frames: ['f1.png', 'f2.png', 'f3.png'], audio: 'b.wav', durationSec: 3.0, transition: 'fade' as const, motion: 'still' as const }], captions: 'c.ass', output: 'out.mp4', audio: testAudio(2) };
     await runFfmpeg(ff, buildRenderArgs(plan), { cwd: dir });
     const info = await probe(ff, path.join(dir, 'out.mp4'));
     expect(info.video).toMatchObject({ width: 1080, height: 1920 });
     expect(Math.abs(info.durationSec - 5.6)).toBeLessThan(0.1);
+    for (const stem of ['narration', 'music', 'music-dry', 'sfx']) expect(fs.existsSync(path.join(dir, 'stems', `${stem}.flac`))).toBe(true);
   }, 120_000);
 });
 

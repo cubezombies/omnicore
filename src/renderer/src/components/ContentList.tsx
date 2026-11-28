@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { STAGE_LABELS, type ContentItem, type Stage } from '../../../shared/domain';
+import { DestinationBadges } from './PublicationStatus';
+import type { DestinationStatus } from '../../../shared/publicationStatus';
 
 export function useContent(channelId: number, stages: Stage[] | undefined, refreshKey: number) {
   const [items, setItems] = useState<ContentItem[] | null>(null);
@@ -28,11 +30,14 @@ const fmt = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle
 export function ContentList({
   items,
   empty,
-  onOpen
+  onOpen,
+  publication
 }: {
   items: ContentItem[] | null;
   empty: string;
   onOpen: (item: ContentItem) => void;
+  /** Publication status per content item (from its latest production). */
+  publication?: Map<number, DestinationStatus[]>;
 }) {
   if (items === null) return <p className="muted">Loading…</p>;
   if (items.length === 0) return <p className="empty">{empty}</p>;
@@ -46,6 +51,7 @@ export function ContentList({
               {it.summary && <span className="row-summary">{it.summary}</span>}
             </span>
             <StageBadge stage={it.stage} />
+            {publication?.get(it.id) && <DestinationBadges statuses={publication.get(it.id)!} />}
             <span className="row-date">{fmt(it.updatedAt)}</span>
           </button>
         </li>

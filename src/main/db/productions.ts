@@ -18,6 +18,7 @@ import {
 } from '../../shared/production';
 import { NotFoundError } from './repository';
 import type { ApprovalState, PlatformMetadata, ProductionDestination } from '../../shared/operations';
+import type { FailureInfo } from '../../shared/failures';
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 
@@ -32,6 +33,7 @@ interface ProductionRow {
   status: ProductionStatus;
   current_step: StepName | null;
   error: string | null;
+  failure?: string | null;
   sources: string;
   brief: string | null;
   storyboard: string | null;
@@ -117,6 +119,8 @@ export class ProductionRepository {
     // 0.3 settings had only a Wikipedia toggle.
     if (!saved.researchProviders && saved.wikipediaResearch === false) merged.researchProviders = merged.researchProviders.filter((p) => p !== 'wikipedia');
     merged.wikipediaResearch = merged.researchProviders.includes('wikipedia');
+    // Transition effects at scene cuts were removed (2026-11-28): a stored "on" is retired, never honoured.
+    merged.sfxTransitions = false;
     // 0.6.1: add the new visual sources once to existing settings (user can remove them afterwards).
     if (saved.visuals && (saved.visualsRev ?? 0) < 2) {
       const v = [...saved.visuals];
@@ -200,6 +204,7 @@ export class ProductionRepository {
       status: r.status,
       currentStep: r.current_step,
       error: r.error,
+      failure: r.failure ? (JSON.parse(r.failure) as FailureInfo) : null,
       outputPath: r.output_path,
       durationSec: r.duration_sec === null ? null : Number(r.duration_sec),
       costUsd: steps.reduce((sum, s) => sum + s.costUsd, 0),
@@ -246,6 +251,7 @@ export class ProductionRepository {
       status: ProductionStatus;
       currentStep: StepName | null;
       error: string | null;
+      failure: FailureInfo | null;
       sources: Source[];
       brief: Brief | null;
       storyboard: Storyboard | null;
@@ -261,6 +267,7 @@ export class ProductionRepository {
       status: ['status', (v) => v],
       currentStep: ['current_step', (v) => v],
       error: ['error', (v) => v],
+      failure: ['failure', (v) => (v ? JSON.stringify(v) : null)],
       sources: ['sources', (v) => JSON.stringify(v)],
       brief: ['brief', (v) => (v === null ? null : JSON.stringify(v))],
       storyboard: ['storyboard', (v) => (v === null ? null : JSON.stringify(v))],
@@ -271,6 +278,8 @@ export class ProductionRepository {
       approval: ['approval', (v) => v],
       publishStatus: ['publish_status', (v) => v]
     };
+    // Clearing the error (queued, running, retried) clears its classification too.
+    if (p.error === null && p.failure === undefined) p = { ...p, failure: null };
     const keys = Object.keys(p).filter((k) => k in map && (p as Record<string, unknown>)[k] !== undefined);
     if (!keys.length) return;
     const set = keys.map((k) => `${map[k][0]} = ?`).join(', ');
@@ -357,6 +366,18 @@ export class ProductionRepository {
       fixed.push(Number(r.id));
     }
     return fixed;
+  }
+
+  /** Productions whose status is "running". */
+  running(): number[] {
+    return (this.db.prepare(`SELECT id FROM productions WHERE status = 'running' ORDER BY id`).all() as { id: number }[]).map((r) => Number(r.id));
+  }
+
+  /** Mark a production failed with a reason and classification (its current step too). */
+  markFailed(id: number, error: string, failure: FailureInfo): void {
+    const r = this.db.prepare('SELECT current_step FROM productions WHERE id = ?').get(id) as { current_step: StepName | null } | undefined;
+    if (r?.current_step) this.updateStep(id, r.current_step, { status: 'failed', error });
+    this.update(id, { status: 'failed', error, failure });
   }
 
   /** On startup: anything left "running" was interrupted by an app exit. */

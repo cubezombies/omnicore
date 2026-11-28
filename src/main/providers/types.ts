@@ -58,6 +58,10 @@ export interface VisualRequest {
   contextTerms?: string[];
   /** Scene visual plan (0.6.1+): what this scene should show and why. */
   plan?: import('../media/visualPlan').VisualPlan;
+  /** The production, business and job this visual is for (generated assets are tied to them). */
+  productionId?: number;
+  businessId?: number;
+  jobId?: number | null;
 }
 
 export interface VisualResult {

@@ -26,6 +26,8 @@ import {
   type ProviderSettings,
   type StepName
 } from '../shared/production';
+import { MIX_PROFILES, type MixProfileId } from '../shared/audioMix';
+import type { ReliabilitySettings } from '../shared/automation';
 
 /** Thrown for malformed input from the renderer. The renderer is treated as untrusted. */
 export class ValidationError extends Error {}
@@ -165,11 +167,17 @@ export function settings(v: unknown): ProviderSettings {
     visualsRev: 2,
     comfyUrl: httpUrl(o.comfyUrl, 'ComfyUI URL'),
     comfyCheckpoint: str(o.comfyCheckpoint, 'ComfyUI checkpoint', 300),
+    comfyInstallDir: str(o.comfyInstallDir ?? '', 'ComfyUI folder', 400),
+    comfyPort: intIn(o.comfyPort ?? 8189, 'ComfyUI port', 1024, 65535),
+    comfyMaxConcurrent: intIn(o.comfyMaxConcurrent ?? 1, 'ComfyUI concurrency', 1, 2),
+    comfyMinFreeVramMb: intIn(o.comfyMinFreeVramMb ?? 7000, 'ComfyUI free VRAM', 2000, 24000),
+    comfyUnloadAfterJob: o.comfyUnloadAfterJob !== false,
+    comfyAutoStart: o.comfyAutoStart !== false,
     musicMode: o.musicMode as ProviderSettings['musicMode'],
     musicTrackId:
       o.musicMode === 'track' ? id(o.musicTrackId, 'Music track') : typeof o.musicTrackId === 'number' && o.musicTrackId >= 0 ? Math.floor(o.musicTrackId) : 0,
     musicVolume: num(o.musicVolume, 'Music volume', 0, 1),
-    sfxTransitions: o.sfxTransitions,
+    sfxTransitions: false, // retired: no transition effects
     sfxVolume: num(o.sfxVolume, 'Effect volume', 0, 1),
     allowShareAlike: o.allowShareAlike,
     ffmpegPath: filePath(o.ffmpegPath, 'FFmpeg path', /\.exe$/i)
@@ -418,7 +426,11 @@ export function soundProfile(v: unknown): SoundProfile {
   if (!moods.every((m) => (SOUND_MOODS as readonly unknown[]).includes(m))) throw new ValidationError('Unknown mood');
   const vol = Number(o.musicVolume);
   if (!Number.isFinite(vol) || vol < 0.02 || vol > 0.5) throw new ValidationError('Music volume must be between 0.02 and 0.5');
-  return { music: o.music, preferredMoods: moods as SoundProfile['preferredMoods'], introAccent: bool(o.introAccent, 'Intro accent'), transitions: bool(o.transitions, 'Transitions'), outroAccent: bool(o.outroAccent, 'Outro accent'), autoDiscover: bool(o.autoDiscover, 'Automatic discovery'), musicVolume: vol };
+  const mix = o.mixProfile ?? 'balanced';
+  if (!(typeof mix === 'string' && mix in MIX_PROFILES)) throw new ValidationError('Unknown mix profile');
+  // Music is mandatory in every video. There are no automatic effects (no transitions, risers or pops); contextual
+  // effects are approved per production.
+  return { music: 'required', preferredMoods: moods as SoundProfile['preferredMoods'], introAccent: false, transitions: false, outroAccent: false, autoDiscover: bool(o.autoDiscover, 'Automatic discovery'), musicVolume: vol, mixProfile: mix as MixProfileId };
 }
 export function musicOverride(v: unknown): MusicOverride {
   const o = (v ?? {}) as Record<string, unknown>;
@@ -466,4 +478,28 @@ export function audition(v: unknown): { text: string; term?: string; say?: strin
   const text = str(o.text, 'Text', 400).trim();
   if (!text) throw new ValidationError('Nothing to say');
   return { text, term: o.term === undefined ? undefined : str(o.term, 'Term', 60).trim(), say: o.say === undefined ? undefined : str(o.say, 'Pronunciation', 120).trim() };
+}
+
+/** Reliability limits: bounded so automation can never retry or wait without limit. */
+export function reliability(v: unknown): ReliabilitySettings {
+  const o = (v ?? {}) as Record<string, unknown>;
+  const n = (k: string, lo: number, hi: number) => {
+    const x = Number(o[k]);
+    if (!Number.isFinite(x) || x < lo || x > hi) throw new ValidationError(`${k} must be between ${lo} and ${hi}`);
+    return Math.round(x);
+  };
+  return {
+    maxAutomaticRetries: n('maxAutomaticRetries', 0, 5),
+    retryBackoffMinutes: n('retryBackoffMinutes', 1, 240),
+    stallMinutes: n('stallMinutes', 5, 240),
+    queuedExpiryHours: n('queuedExpiryHours', 1, 168),
+    circuitFailureThreshold: n('circuitFailureThreshold', 1, 10),
+    circuitCooldownMinutes: n('circuitCooldownMinutes', 1, 240)
+  };
+}
+
+function intIn(v: unknown, name: string, lo: number, hi: number): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < lo || n > hi) throw new ValidationError(`${name} must be a whole number between ${lo} and ${hi}`);
+  return n;
 }

@@ -60,26 +60,6 @@ export function clearedLicence(license: string, allowShareAlike = false): { ok: 
 /** Titles and tags that suggest singing, which would compete with the narration. */
 export const VOCAL = /\b(vocals?|voice|feat\.?|ft\.|featuring|sings?|singer|song|lyrics?|rap|acapella|a cappella|choir)\b/i;
 
-export interface Cue {
-  role: 'intro' | 'transition' | 'outro';
-  atSec: number;
-}
-
-/**
- * Where accents go: a short riser into the first word, a whoosh slightly before each cut (it peaks on the cut), and a
- * soft accent as the outro begins. Accents never land on top of a word in the first or last half-second.
- */
-export function soundCues(sceneDurations: number[], opts: { intro: boolean; transitions: boolean; outro: boolean; transitionLead?: number }): Cue[] {
-  const out: Cue[] = [];
-  if (opts.intro && sceneDurations.length) out.push({ role: 'intro', atSec: 0 });
-  let t = 0;
-  sceneDurations.forEach((d, i) => {
-    if (i > 0 && opts.transitions && i < sceneDurations.length - 1) out.push({ role: 'transition', atSec: Math.max(0, t - (opts.transitionLead ?? 0.3)) });
-    if (i > 0 && i === sceneDurations.length - 1 && opts.outro) out.push({ role: 'outro', atSec: t });
-    t += d;
-  });
-  return out;
-}
 
 /** Can this track be used for a production going to these platforms? Platform-only tracks never leave their platform. */
 export function allowedFor(t: Pick<AudioTrack, 'usage' | 'restrictions'>, platforms: string[]): { ok: boolean; blocked: string[] } {

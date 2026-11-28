@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { monetizationPrograms, type PlatformStats } from './analytics';
 import type { AnalyticsReport, PlatformAnalytics, VideoStats } from '../../shared/operations';
@@ -9,13 +10,14 @@ import type { Platform, PlatformAppSummary, Privacy, Publication, TikTokCreatorI
 import { OAuthError, type SecretBox, type TokenSet } from './oauth';
 import type { PlatformApp, PlatformClient } from './platforms';
 import { allowedFor } from '../audio/sound';
+import { AUDIO_GATE_ID } from '../../shared/audioMix';
 
 export class PublishBlockedError extends Error {}
 
 const DEFAULT_PORT: Record<Platform, number> = { tiktok: 53682, youtube: 0, instagram: 0 };
 const toPub = (r: Record<string, unknown>): Publication => ({
   id: Number(r.id),
-  productionId: Number(r.production_id),
+  productionId: r.production_id === null || r.production_id === undefined ? null : Number(r.production_id),
   platform: r.platform as Platform,
   accountId: r.account_id === null ? null : Number(r.account_id),
   privacyRequested: r.privacy_requested as Privacy,
@@ -26,8 +28,20 @@ const toPub = (r: Record<string, unknown>): Publication => ({
   detail: String(r.detail),
   approvedBy: String(r.approved_by),
   createdAt: String(r.created_at),
-  updatedAt: String(r.updated_at)
+  updatedAt: String(r.updated_at),
+  productionNumber: Number(r.production_number ?? r.production_id ?? 0),
+  productionTopic: String(r.production_topic ?? ''),
+  accountHandle: String(r.account_handle ?? ''),
+  renderSha256: String(r.render_sha256 ?? ''),
+  uploadedAt: (r.uploaded_at as string | null) ?? null,
+  publishedAt: (r.published_at as string | null) ?? null,
+  failedAt: (r.failed_at as string | null) ?? null,
+  deletedAt: (r.deleted_at as string | null) ?? null,
+  deletionSource: (String(r.deletion_source ?? '') as Publication['deletionSource']),
+  deletionNote: String(r.deletion_note ?? ''),
+  restoredFrom: String(r.restored_from ?? '')
 });
+const NOW_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 const norm = (h: string) => h.trim().replace(/^@/, '').toLowerCase();
 
 export interface PublisherDeps {
@@ -134,7 +148,7 @@ export class Publisher {
     const accounts = this.d.ops.listAccounts(businessId).filter((a) => a.status === 'connected');
     // Only this business's publications, through this business's accounts: numbers never combine businesses.
     const pubs = (
-      this.d.db.prepare(`SELECT x.* FROM publications x JOIN productions p ON p.id = x.production_id WHERE p.channel_id = ? AND x.status = 'published' AND x.remote_id != '' ORDER BY x.id`).all(businessId) as Record<string, unknown>[]
+      this.d.db.prepare(`SELECT x.* FROM publications x JOIN productions p ON p.id = x.production_id WHERE p.channel_id = ? AND x.status = 'published' AND x.deleted_at IS NULL AND x.remote_id != '' ORDER BY x.id`).all(businessId) as Record<string, unknown>[]
     ).map(toPub);
     const platforms: PlatformAnalytics[] = [];
     const raw: Partial<Record<Platform, PlatformStats>> = {};
@@ -143,9 +157,9 @@ export class Publisher {
       const mine = pubs.filter((p) => p.accountId === a.id);
       const videos = (s?: PlatformStats): VideoStats[] =>
         mine.map((p) => {
-          const pr = this.d.productions.get(p.productionId);
+          const pr = this.d.productions.get(p.productionId!);
           const v = s?.videos[p.remoteId];
-          return { publicationId: p.id, productionId: p.productionId, title: pr.storyboard?.title ?? pr.topic, url: p.url, privacy: p.privacyApplied, views: v?.views ?? null, likes: v?.likes ?? null, comments: v?.comments ?? null };
+          return { publicationId: p.id, productionId: p.productionId!, title: pr.storyboard?.title ?? pr.topic, url: p.url, privacy: p.privacyApplied, views: v?.views ?? null, likes: v?.likes ?? null, comments: v?.comments ?? null };
         });
       const client = this.d.clients[a.platform];
       if (!client.stats) {
@@ -224,6 +238,9 @@ export class Publisher {
     if (p.status !== 'completed' || !p.outputPath || !fs.existsSync(p.outputPath)) out.push('The video is not finished.');
     const qa = this.d.ops.qaRuns(productionId).at(-1);
     if (!qa || qa.status !== 'passed') out.push(`Quality check has not passed${qa ? ` (last result: ${qa.status})` : ''}.`);
+    // The mandatory audio gate is checked again here, independently of the approval.
+    const audioGate = qa?.findings.find((f) => f.checkId === AUDIO_GATE_ID);
+    if (!audioGate?.passed) out.push(audioGate ? `Audio gate failed: ${audioGate.message}` : 'The audio gate has not passed on this render (QA predates the mandatory audio checks). Re-render and run QA.');
     if (p.approval !== 'approved') out.push('Not approved for publication.');
     // Rights are re-verified right before publishing; an open rights incident blocks the video outright.
     const incident = this.d.db.prepare("SELECT description FROM incidents WHERE production_id = ? AND status = 'open' AND kind = 'rights_complaint' LIMIT 1").get(productionId) as { description: string } | undefined;
@@ -248,7 +265,8 @@ export class Publisher {
       if (platform === 'instagram' && dest.privacy !== 'public') out.push('Instagram API posts are always public; set the Instagram destination to Public to use it.');
       if (platform === 'instagram' && !this.getApp('instagram', p.channelId)?.publicVideoBaseUrl) out.push('Instagram needs the video at a public HTTPS URL (not configured).');
     }
-    const prior = this.publications(productionId).find((x) => x.platform === platform && x.status !== 'failed');
+    // Failed attempts and posts recorded as deleted don't block a new attempt (a corrected render is a new record).
+    const prior = this.publications(productionId).find((x) => x.platform === platform && x.status !== 'failed' && !x.deletedAt);
     if (prior) out.push(`Already ${prior.status} on ${platform}.`);
     return out;
   }
@@ -281,20 +299,22 @@ export class Publisher {
     const p = this.d.productions.get(productionId);
     const dest = p.destinations.find((d) => d.platform === platform)!;
     const approvedBy = this.d.audit.events({ productionId }).filter((e) => e.type === 'approval.granted').at(-1)?.actor ?? actor;
+    // Every attempt is its own record: what was uploaded (file hash), by whom, to which account, and when.
+    const renderSha = p.outputPath && fs.existsSync(p.outputPath) ? crypto.createHash('sha256').update(fs.readFileSync(p.outputPath)).digest('hex') : '';
     const ins = this.d.db
-      .prepare('INSERT INTO publications (production_id, platform, account_id, privacy_requested, approved_by) VALUES (?,?,?,?,?)')
-      .run(productionId, platform, dest.accountId, tiktok?.privacyLevel ?? dest.privacy, approvedBy);
+      .prepare('INSERT INTO publications (production_id, production_number, production_topic, platform, account_id, account_handle, privacy_requested, approved_by, render_sha256) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(productionId, productionId, p.topic, platform, dest.accountId, dest.handle ?? '', tiktok?.privacyLevel ?? dest.privacy, approvedBy, renderSha);
     const id = Number(ins.lastInsertRowid);
-    const set = (f: Partial<Record<'status' | 'remote_id' | 'url' | 'detail' | 'privacy_applied', string>>) => {
+    const set = (f: Partial<Record<'status' | 'remote_id' | 'url' | 'detail' | 'privacy_applied', string>>, stamp?: 'uploaded_at' | 'failed_at') => {
       const keys = Object.keys(f);
-      this.d.db.prepare(`UPDATE publications SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`).run(...keys.map((k) => f[k as keyof typeof f]!), id);
+      this.d.db.prepare(`UPDATE publications SET ${keys.map((k) => `${k} = ?`).join(', ')}${stamp ? `, ${stamp} = ${NOW_SQL}` : ''}, updated_at = ${NOW_SQL} WHERE id = ?`).run(...keys.map((k) => f[k as keyof typeof f]!), id);
     };
     this.d.audit.record({ actor, type: 'publish.started', productionId, data: { platform, accountId: dest.accountId, handle: dest.handle, privacy: tiktok?.privacyLevel ?? dest.privacy, approvedBy, ...(tiktok ? { tiktok: { ...tiktok, caption: undefined } } : {}) } });
     this.syncStatus(productionId);
     try {
       const tokens = await this.tokensFor(dest.accountId!, p.channelId);
       const r = await this.d.clients[platform].publish({ tokens, file: p.outputPath!, productionId, metadata: p.metadata[platform], privacy: dest.privacy, app: this.getApp(platform, p.channelId)!, tiktok, signal });
-      set({ status: 'processing', remote_id: r.remoteId, privacy_applied: r.appliedPrivacy, detail: r.notes.join(' ') });
+      set({ status: 'processing', remote_id: r.remoteId, privacy_applied: r.appliedPrivacy, detail: r.notes.join(' ') }, 'uploaded_at');
       this.d.audit.record({ actor, type: 'publish.submitted', productionId, data: { platform, remoteId: r.remoteId, appliedPrivacy: r.appliedPrivacy, notes: r.notes } });
       const deadline = Date.now() + (this.d.verifyWaitMs ?? 120_000);
       while (Date.now() < deadline) {
@@ -303,7 +323,7 @@ export class Publisher {
         await new Promise((res) => setTimeout(res, this.d.pollMs ?? 8000));
       }
     } catch (e) {
-      set({ status: 'failed', detail: e instanceof Error ? e.message : String(e) });
+      set({ status: 'failed', detail: e instanceof Error ? e.message : String(e) }, 'failed_at');
       this.d.audit.record({ actor, type: 'publish.failed', productionId, data: { platform, error: String(e) } });
       this.syncStatus(productionId);
       throw e;
@@ -315,13 +335,13 @@ export class Publisher {
   /** Ask the platform whether a submitted post is live; records the verified URL. */
   async verifyOne(publicationId: number): Promise<Publication> {
     const pub = toPub(this.d.db.prepare('SELECT * FROM publications WHERE id = ?').get(publicationId) as Record<string, unknown>);
-    if (pub.status !== 'processing' || !pub.accountId) return pub;
+    if (pub.status !== 'processing' || !pub.accountId || pub.productionId === null) return pub;
     const owner = this.d.productions.get(pub.productionId).channelId;
     const tokens = await this.tokensFor(pub.accountId, owner);
     const v = await this.d.clients[pub.platform].verify(tokens, pub.remoteId, this.getApp(pub.platform, owner)!);
     if (v.state !== 'processing') {
       this.d.db
-        .prepare(`UPDATE publications SET status = ?, url = ?, detail = TRIM(detail || ' ' || ?), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`)
+        .prepare(`UPDATE publications SET status = ?, url = ?, detail = TRIM(detail || ' ' || ?), ${v.state === 'published' ? 'published_at' : 'failed_at'} = ${NOW_SQL}, updated_at = ${NOW_SQL} WHERE id = ?`)
         .run(v.state, v.url ?? '', v.detail, publicationId);
       this.d.audit.record({ actor: 'engine', type: v.state === 'published' ? 'publish.verified' : 'publish.failed', productionId: pub.productionId, data: { platform: pub.platform, remoteId: pub.remoteId, url: v.url, detail: v.detail } });
       this.syncStatus(pub.productionId);
@@ -339,11 +359,40 @@ export class Publisher {
     }
   }
 
+  /**
+   * Record that a published post was deleted on the platform. Only the user (or a platform confirmation) can say so;
+   * Omnicore never infers it. The record and its earlier history are kept; a new attempt becomes possible.
+   */
+  recordDeletion(publicationId: number, businessId: number, source: 'user' | 'platform', note: string): Publication {
+    const row = this.d.db.prepare('SELECT x.*, p.channel_id FROM publications x LEFT JOIN productions p ON p.id = x.production_id WHERE x.id = ?').get(publicationId) as Record<string, unknown> | undefined;
+    if (!row) throw new Error(`Publication ${publicationId} not found`);
+    if (row.channel_id !== null && row.channel_id !== undefined && Number(row.channel_id) !== businessId) throw new Error(`Publication ${publicationId} not found`);
+    const pub = toPub(row);
+    if (pub.deletedAt) throw new Error('This post is already recorded as deleted.');
+    if (pub.status !== 'published' && pub.status !== 'processing') throw new Error('Only a post that reached the platform can be recorded as deleted.');
+    this.d.db.prepare(`UPDATE publications SET deleted_at = ${NOW_SQL}, deletion_source = ?, deletion_note = ?, updated_at = ${NOW_SQL} WHERE id = ?`).run(source, note, publicationId);
+    this.d.audit.record({ actor: source === 'user' ? 'user' : 'engine', businessId, type: 'publish.deleted', productionId: pub.productionId ?? undefined, data: { publicationId, platform: pub.platform, remoteId: pub.remoteId, productionNumber: pub.productionNumber, source, note } });
+    if (pub.productionId !== null) this.syncStatus(pub.productionId);
+    return toPub(this.d.db.prepare('SELECT * FROM publications WHERE id = ?').get(publicationId) as Record<string, unknown>);
+  }
+
+  /** Every publication for a business, including those whose production was deleted (newest first). */
+  publicationHistory(businessId: number): Publication[] {
+    return (
+      this.d.db
+        .prepare(
+          `SELECT x.* FROM publications x LEFT JOIN productions p ON p.id = x.production_id LEFT JOIN platform_accounts a ON a.id = x.account_id
+           WHERE p.channel_id = ? OR (x.production_id IS NULL AND (a.business_id = ? OR a.id IS NULL)) ORDER BY x.id DESC`
+        )
+        .all(businessId, businessId) as Record<string, unknown>[]
+    ).map(toPub);
+  }
+
   private syncStatus(productionId: number) {
     const p = this.d.productions.get(productionId);
     const pubs = this.publications(productionId);
     const wanted = p.destinations.map((d) => d.platform);
-    const latest = (pl: Platform) => pubs.filter((x) => x.platform === pl).at(-1);
+    const latest = (pl: Platform) => pubs.filter((x) => x.platform === pl && !x.deletedAt).at(-1);
     const states = wanted.map((pl) => latest(pl)?.status ?? 'none');
     const status = states.every((s) => s === 'published')
       ? 'published'

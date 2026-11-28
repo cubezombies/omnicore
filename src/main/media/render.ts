@@ -5,14 +5,13 @@ export const VIDEO_H = 1920;
 export const FPS = 30;
 /** Silence after each scene's narration so cuts don't feel rushed. */
 export const SCENE_PAD_SEC = 0.35;
-/** Music is normalised to this loudness before mixing (narration is -16 LUFS). */
-export const MUSIC_LUFS = -30;
-/** The settings default; other values scale the normalised music relative to it. */
-export const DEFAULT_MUSIC_VOLUME = 0.12;
-export const MUSIC_FADE_IN_SEC = 1.2;
-export const MUSIC_FADE_OUT_SEC = 1.8;
+export { MUSIC_FADE_IN_SEC, MUSIC_FADE_OUT_SEC } from '../../shared/audioMix';
+import { MUSIC_FADE_IN_SEC, MUSIC_FADE_OUT_SEC } from '../../shared/audioMix';
 export const END_FADE_SEC = 0.25;
-const LIMIT = 0.85;
+/** Final safety limiter ceiling, linear (-1.5 dBFS). QA requires true peak <= -1 dBTP. */
+const LIMIT = 0.841;
+/** Narration safety limiter (-2 dBFS) after per-scene loudness matching. */
+const NARRATION_LIMIT = 0.794;
 /** Dissolve between the frames of a build-up animation. */
 export const BUILD_FADE_SEC = 0.2;
 
@@ -31,29 +30,34 @@ export interface RenderScene {
   transition?: Transition;
   /** Build-up animation: these images are shown in turn across the scene (each one reveals a little more). */
   frames?: string[];
+  /** Narration starts this long into the scene (the music-only intro on the first scene). */
+  audioDelaySec?: number;
 }
 
 export interface RenderPlan {
   scenes: RenderScene[];
   captions: string; // ASS file relative to cwd (relative avoids filter-path escaping on Windows)
   output: string;
-  music?: { path: string; volume: number };
-  /** One-shot effect mixed in at each listed time (e.g. a whoosh at scene cuts). */
-  sfx?: { path: string; volume: number; atSec: number[] };
-  /** More accents (intro riser, outro accent), each its own file, volume and times. */
-  cues?: { path: string; volume: number; atSec: number[] }[];
+  /** The soundtrack. Required: there is no render without music. */
+  audio: RenderAudio;
 }
 
-/** Times (s) at which a transition effect starts: slightly before each cut so it peaks on the cut. */
-export const transitionTimes = (p: Pick<RenderPlan, 'scenes'>, lead = 0.3): number[] => {
-  const out: number[] = [];
-  let t = 0;
-  p.scenes.slice(0, -1).forEach((s) => {
-    t += s.durationSec;
-    out.push(Math.max(0, t - lead));
-  });
-  return out;
-};
+/**
+ * Every level is a measured gain (dB) that brings a file to its loudness target, not a volume percentage.
+ * The music is multiplied by a precomputed ducking envelope (see audio/mix.ts), so ducking is exact and testable.
+ */
+export interface RenderAudio {
+  /** Gain per scene narration clip so every scene sits at the narration target. */
+  narrationGainDb: number[];
+  music: { path: string; gainDb: number; envelope: string };
+  /** Contextual effects approved for this production (usually none): file, gain and start times. */
+  sfx: { role: 'contextual'; path: string; gainDb: number; atSec: number[] }[];
+  /** One gain on every bus (dB) that brings the finished mix to the delivery loudness (set by the measuring pre-pass). */
+  masterGainDb?: number;
+  /** Stems written next to the video (exactly what went into the mix, before the final limiter), for QA. */
+  stems: { narration: string; music: string; musicDry: string; sfx: string };
+}
+
 
 /** Round to whole frames so audio padding and video length agree exactly. */
 export const frameAlign = (sec: number): number => Math.max(1, Math.round(sec * FPS)) / FPS;
@@ -64,7 +68,7 @@ export function buildRenderArgs(p: RenderPlan): string[] {
   if (!p.scenes.length) throw new Error('Nothing to render: no scenes.');
   const n = p.scenes.length;
   const args: string[] = [];
-  // Inputs: every scene's image(s), then every scene's narration, then music and the transition effect.
+  // Inputs: every scene's image(s), then every scene's narration, then the soundtrack inputs.
   const sceneInputs: number[][] = [];
   let next = 0;
   for (const s of p.scenes) {
@@ -72,14 +76,8 @@ export function buildRenderArgs(p: RenderPlan): string[] {
     sceneInputs.push(imgs.map(() => next++));
     for (const img of imgs) args.push('-i', img);
   }
-  const audioBase = next;
-  for (const s of p.scenes) args.push('-i', s.audio);
-  const musicInput = audioBase + n;
-  if (p.music) args.push('-stream_loop', '-1', '-i', p.music.path);
-  // Every accent group (transitions, intro, outro) is one input; each group's times are delayed copies of it.
-  const groups = [...(p.sfx ? [p.sfx] : []), ...(p.cues ?? [])].map((g) => ({ ...g, atSec: g.atSec.filter((t) => t >= 0) })).filter((g) => g.atSec.length);
-  for (const g of groups) args.push('-i', g.path);
-  const sfxInput = musicInput + (p.music ? 1 : 0);
+  const sound = soundtrackGraph(p, next, true);
+  args.push(...sound.inputs);
 
   const W2 = Math.round(VIDEO_W * 1.25);
   const H2 = Math.round(VIDEO_H * 1.25);
@@ -128,10 +126,6 @@ export function buildRenderArgs(p: RenderPlan): string[] {
         prev = out;
       }
     }
-    f.push(
-      `[${audioBase + i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
-        `apad=whole_dur=${s.durationSec.toFixed(4)},atrim=duration=${s.durationSec.toFixed(4)}[a${i}]`
-    );
   });
   if (xf && n > 1) {
     let prev = 'v0';
@@ -142,46 +136,14 @@ export function buildRenderArgs(p: RenderPlan): string[] {
       f.push(`[${prev}][v${i}]xfade=transition=${p.scenes[i].transition ?? 'fade'}:duration=${XFADE_SEC}:offset=${offset.toFixed(4)}[${out}]`);
       prev = out;
     }
-    f.push(`${p.scenes.map((_, i) => `[a${i}]`).join('')}concat=n=${n}:v=0:a=1[ac]`);
   } else {
-    f.push(`${p.scenes.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${n}:v=1:a=1[vc][ac]`);
+    f.push(`${p.scenes.map((_, i) => `[v${i}]`).join('')}concat=n=${n}:v=1:a=0[vc]`);
   }
   f.push(`[vc]ass=${p.captions},format=yuv420p[vout]`);
-  f.push(`[ac]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[narr]`);
+  f.push(...sound.filters);
   const total = totalDuration(p);
-  if (p.music) {
-    // Every track is brought to the same loudness first (about 14 LU under the narration), so the volume setting means
-    // the same thing for every song; then fade in and out, and duck under the voice.
-    const gain = p.music.volume / DEFAULT_MUSIC_VOLUME;
-    const fadeOut = Math.max(0, total - MUSIC_FADE_OUT_SEC);
-    f.push(
-      `[${musicInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,loudnorm=I=${MUSIC_LUFS}:TP=-6:LRA=7,aresample=48000,` +
-        `volume=${gain.toFixed(3)},afade=t=in:st=0:d=${MUSIC_FADE_IN_SEC},afade=t=out:st=${fadeOut.toFixed(3)}:d=${MUSIC_FADE_OUT_SEC}[mus]`
-    );
-    f.push(`[narr]asplit=2[n1][n2]`);
-    f.push(`[mus][n1]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[duck]`);
-    f.push(`[n2][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[bed]`);
-  } else {
-    f.push(`[narr]anull[bed]`);
-  }
-  if (groups.length) {
-    const labels: string[] = [];
-    groups.forEach((g, gi) => {
-      const k = g.atSec.length;
-      const names = g.atSec.map((_, i) => `[sx${gi}_${i}]`);
-      f.push(`[${sfxInput + gi}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${g.volume.toFixed(3)}` + (k > 1 ? `,asplit=${k}${names.join('')}` : names[0]));
-      g.atSec.forEach((t, i) => {
-        const ms = Math.round(t * 1000);
-        f.push(`${names[i]}adelay=${ms}|${ms}[sd${gi}_${i}]`);
-        labels.push(`[sd${gi}_${i}]`);
-      });
-    });
-    f.push(`[bed]${labels.join('')}amix=inputs=${labels.length + 1}:duration=first:dropout_transition=0:normalize=0[amix]`);
-  } else {
-    f.push(`[bed]anull[amix]`);
-  }
-  // Safety limiter (no clipping, about -1.4 dBFS ceiling) and a short fade so the video never ends on a cut.
-  f.push(`[amix]alimiter=limit=${LIMIT}:level=false,afade=t=out:st=${Math.max(0, total - END_FADE_SEC).toFixed(3)}:d=${END_FADE_SEC}[aout]`);
+  const t3 = total.toFixed(3);
+  const a = p.audio;
 
   args.push(
     '-filter_complex', f.join(';'),
@@ -189,8 +151,82 @@ export function buildRenderArgs(p: RenderPlan): string[] {
     '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(FPS),
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
     '-movflags', '+faststart',
-    '-t', total.toFixed(3),
+    '-t', t3,
     p.output
   );
+  for (const [label, file] of [['narrS', a.stems.narration], ['musS', a.stems.music], ['musdryS', a.stems.musicDry], ['sfxS', a.stems.sfx]] as const) {
+    args.push('-map', `[${label}]`, '-c:a', 'flac', '-ar', '48000', '-t', t3, file);
+  }
   return args;
+}
+
+
+/**
+ * The soundtrack part of the render graph (shared by the render and the loudness pre-pass): narration matched scene
+ * by scene, music at its measured gain with fades and the ducking envelope, effects at their cue times, one master
+ * gain on every bus (final loudness normalisation), the safety limiter and the end fade. Narration inputs start at
+ * index `base`. With stems, each bus is also split out for the stem files.
+ */
+export function soundtrackGraph(p: RenderPlan, base: number, stems: boolean): { inputs: string[]; filters: string[] } {
+  const a = p.audio;
+  const n = p.scenes.length;
+  if (!a?.music?.path) throw new Error('No soundtrack in the render plan: every video must carry approved music.');
+  if (a.narrationGainDb.length !== n) throw new Error('Render plan has no loudness gain for every scene.');
+  const master = a.masterGainDb ?? 0;
+  const inputs: string[] = [];
+  for (const s of p.scenes) inputs.push('-i', s.audio);
+  const musicInput = base + n;
+  inputs.push('-stream_loop', '-1', '-i', a.music.path);
+  const envInput = musicInput + 1;
+  inputs.push('-i', a.music.envelope);
+  // Every effect group (transitions, intro, outro) is one input; each group's times are delayed copies of it.
+  const groups = a.sfx.map((g) => ({ ...g, atSec: g.atSec.filter((t) => t >= 0) })).filter((g) => g.atSec.length);
+  for (const g of groups) inputs.push('-i', g.path);
+  const sfxInput = envInput + 1;
+  const total = totalDuration(p);
+  const t3 = total.toFixed(3);
+  const split = (label: string) => (stems ? `asplit=2[${label}][${label}S]` : `anull[${label}]`);
+  const f: string[] = [];
+  p.scenes.forEach((s, i) => {
+    f.push(
+      `[${base + i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,` +
+        `volume=${(a.narrationGainDb[i] + master).toFixed(2)}dB,${s.audioDelaySec ? `adelay=${Math.round(s.audioDelaySec * 1000)}:all=1,` : ''}apad=whole_dur=${s.durationSec.toFixed(4)},atrim=duration=${s.durationSec.toFixed(4)}[a${i}]`
+    );
+  });
+  f.push(`${p.scenes.map((_, i) => `[a${i}]`).join('')}concat=n=${n}:v=0:a=1[ac]`);
+  // Narration: each scene already matched to the target loudness; a gentle limiter catches stray peaks.
+  f.push(`[ac]alimiter=limit=${NARRATION_LIMIT}:attack=3:release=40:level=false,aresample=48000,${split('narr')}`);
+  // Music: measured gain to the profile's open level, fades, then the ducking envelope.
+  const fadeOut = Math.max(0, total - MUSIC_FADE_OUT_SEC);
+  f.push(
+    `[${musicInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=${t3},volume=${(a.music.gainDb + master).toFixed(2)}dB,` +
+      `afade=t=in:st=0:d=${MUSIC_FADE_IN_SEC},afade=t=out:st=${fadeOut.toFixed(3)}:d=${MUSIC_FADE_OUT_SEC},${stems ? 'asplit=2[musdry][musdryS]' : 'anull[musdry]'}`
+  );
+  // The envelope is a gain, so its channel is copied (a power-preserving mono→stereo upmix would lower it 3 dB).
+  f.push(`[${envInput}:a]aresample=48000,pan=stereo|c0=c0|c1=c0,aformat=sample_fmts=fltp,apad=whole_dur=${t3},atrim=duration=${t3}[env]`);
+  f.push(`[musdry][env]amultiply,${split('mus')}`);
+  // Effects: measured gain to each role's peak level, placed at their cue times.
+  const labels: string[] = [];
+  groups.forEach((g, gi) => {
+    const k = g.atSec.length;
+    const names = g.atSec.map((_, i) => `[sx${gi}_${i}]`);
+    f.push(`[${sfxInput + gi}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${(g.gainDb + master).toFixed(2)}dB` + (k > 1 ? `,asplit=${k}${names.join('')}` : names[0]));
+    g.atSec.forEach((t, i) => {
+      const ms = Math.round(t * 1000);
+      f.push(`${names[i]}adelay=${ms}|${ms}[sd${gi}_${i}]`);
+      labels.push(`[sd${gi}_${i}]`);
+    });
+  });
+  f.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${t3}[sfxbase]`);
+  f.push(`[sfxbase]${labels.join('')}amix=inputs=${labels.length + 1}:duration=first:dropout_transition=0:normalize=0,${split('sfx')}`);
+  f.push(`[narr][mus][sfx]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[amix]`);
+  // Safety limiter (about -1.5 dBFS ceiling) and a short fade so the video never ends on a cut.
+  f.push(`[amix]alimiter=limit=${LIMIT}:attack=2:release=50:level=false,afade=t=out:st=${Math.max(0, total - END_FADE_SEC).toFixed(3)}:d=${END_FADE_SEC}[aout]`);
+  return { inputs, filters: f };
+}
+
+/** Audio-only pass of the exact soundtrack graph, measured with EBU R128 (for the master gain). Output: stderr summary. */
+export function buildMixMeasureArgs(p: RenderPlan): string[] {
+  const g = soundtrackGraph(p, 0, false);
+  return [...g.inputs, '-filter_complex', [...g.filters, '[aout]ebur128=peak=true[m]'].join(';'), '-map', '[m]', '-t', totalDuration(p).toFixed(3), '-f', 'null', '-'];
 }

@@ -120,7 +120,11 @@ export function checkPronunciations(sb: Pick<Storyboard, 'scenes'>, entries: Pro
       const mixed = /[a-z][A-Z]|[A-Z]{2,}[a-z]/.test(term);
       const alnum = /\d/.test(term) && /\p{L}/u.test(term);
       const capitalised = /^\p{Lu}/u.test(term) && !sentenceStart;
-      const known = (w: string) => !!english && (english.has(w) || [/s$/, /es$/, /ed$/, /d$/, /ing$/, /ly$/, /er$/].some((re) => re.test(w) && (english.has(w.replace(re, '')) || english.has(w.replace(re, 'e')))));
+      // Typographic apostrophes are looked up as straight ones (the lexicon has "isn't"), and -ies plurals as -y.
+      const known = (w0: string) => {
+        const w = w0.replace(/[’‘ʼ]/g, "'");
+        return !!english && (english.has(w) || (/ies$/.test(w) && english.has(w.replace(/ies$/, 'y'))) || [/s$/, /es$/, /ed$/, /d$/, /ing$/, /ly$/, /er$/].some((re) => re.test(w) && (english.has(w.replace(re, '')) || english.has(w.replace(re, 'e')))));
+      };
       const unknownWord = english ? !known(lower) && !lower.split('-').every((part) => part && known(part)) : capitalised;
       if (!entry && !builtin && !acronym && !mixed && !alnum && !(capitalised && unknownWord) && !(unknownWord && term.length > 3 && english)) return;
       const spoken = speechTokens(term, entries.map((e) => ({ term: e.term, say: e.say })))[0]?.spoken ?? term;

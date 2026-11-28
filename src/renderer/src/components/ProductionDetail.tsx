@@ -4,6 +4,9 @@ import { TikTokPostDialog } from './TikTokPostDialog';
 import { PronunciationPanel } from './PronunciationPanel';
 import { MusicPanel } from './MusicPanel';
 import type { Business } from '../../../shared/business';
+import { DestinationBadges, PublicationHistory } from './PublicationStatus';
+import { destinationStatuses } from '../../../shared/publicationStatus';
+import { effectiveQaStatus, reviewGate } from '../../../shared/review';
 import {
   CLAIM_KIND_LABELS,
   SOURCE_KIND_LABELS,
@@ -234,17 +237,11 @@ export function ProductionDetail({ production: p, onDeleted, business }: { produ
   );
 }
 
-const APPROVAL_LABEL: Record<string, string> = {
-  none: 'Not checked yet',
-  awaiting_review: 'Ready for your review',
-  approved: 'Approved by you',
-  rejected: 'Rejected by you',
-  blocked: 'Blocked by QA (critical failure)'
-};
 
 /** Destinations, QA history, platform metadata and the approval gate for one production. */
 function ReadinessPanel({ production: p }: { production: Production }) {
   const [runs, setRuns] = useState<QaRun[]>([]);
+  const [runsLoaded, setRunsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [exported, setExported] = useState<string | null>(null);
@@ -255,11 +252,16 @@ function ReadinessPanel({ production: p }: { production: Production }) {
   const [ttOpen, setTtOpen] = useState(false);
   const video = p.assets.find((a) => a.kind === 'video');
   useEffect(() => {
-    void window.api.qaRuns(p.id).then(setRuns);
+    void window.api.qaRuns(p.id).then((r) => {
+      setRuns(r);
+      setRunsLoaded(true);
+    });
     void window.api.publications(p.id).then(setPubs);
     void window.api.publishBlockers(p.id).then(setBlockers);
   }, [p.id, p.updatedAt, tick]);
   const last = runs.at(-1);
+  // The label, badge and Approve button all come from the latest QA run: a failed QA never reads "Ready for your review".
+  const gate = reviewGate(p.approval, last);
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
     try {
@@ -296,9 +298,30 @@ function ReadinessPanel({ production: p }: { production: Production }) {
     <section className="readiness">
       <h3>Publication readiness</h3>
       <p className="small">
-        <span className={`badge ${p.approval === 'blocked' ? 'prod-failed' : p.approval === 'approved' ? 'prod-completed' : 'prod-queued'}`}>{APPROVAL_LABEL[p.approval] ?? p.approval}</span>{' '}
+        {runsLoaded ? (
+          <span className={`badge ${gate.state === 'blocked' || gate.state === 'needs_fixes' ? 'prod-failed' : gate.state === 'approved' ? 'prod-completed' : 'prod-queued'}`}>{gate.label}</span>
+        ) : (
+          <span className="badge prod-queued">Checking QA…</span>
+        )}{' '}
         <span className="muted">{p.origin === 'autonomous' ? 'Created autonomously' : 'Created manually'} · publishing: {p.publishStatus.replace('_', ' ')}</span>
       </p>
+      {runsLoaded && (gate.state === 'needs_fixes' || gate.state === 'blocked') && (
+        <div className="review-gate small" id={`gate-${p.id}`}>
+          <p>
+            <strong>{gate.label}.</strong> {gate.state === 'blocked' ? 'Critical QA checks failed.' : 'The latest QA run failed.'} Approval is disabled until the issues are fixed and QA passes.
+          </p>
+          {gate.failing.length > 0 && (
+            <ul>
+              {gate.failing.map((f) => (
+                <li key={f.checkId}>
+                  <span className="muted">{f.severity} · {f.checkId}</span> {f.message}
+                </li>
+              ))}
+            </ul>
+          )}
+          {!last && <p className="muted">QA has not run on this version.</p>}
+        </div>
+      )}
       {error && <p className="field-error small" role="alert">{error}</p>}
       <ul className="sources">
         {p.destinations.map((d) => (
@@ -323,15 +346,10 @@ function ReadinessPanel({ production: p }: { production: Production }) {
           </ul>
         </details>
       )}
-      {pubs.length > 0 && (
-        <ul className="sources">
-          {pubs.map((x) => (
-            <li key={x.id}>
-              <strong>{x.platform}</strong>: {x.status}{x.privacyApplied ? ` (${x.privacyApplied})` : ''} {x.url && <a href={x.url} target="_blank" rel="noreferrer">{x.url}</a>} <span className="muted small">{x.detail}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <p className="small">
+        {runsLoaded && <DestinationBadges statuses={destinationStatuses(p, pubs, effectiveQaStatus(last))} />}
+      </p>
+      <PublicationHistory pubs={pubs} onChanged={() => void window.api.publications(p.id).then(setPubs)} />
       {p.approval === 'approved' && Object.entries(blockers).some(([, b]) => b.length) && (
         <ul className="muted small">
           {Object.entries(blockers).filter(([, b]) => b.length).map(([pl, b]) => <li key={pl}>{pl}: {b.join(' ')}</li>)}
@@ -367,7 +385,15 @@ function ReadinessPanel({ production: p }: { production: Production }) {
         {p.approval === 'awaiting_review' && (
           <>
             <input aria-label="Approval note" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-            <button className="primary" onClick={() => act(() => window.api.approveProduction(p.id, note)).then(() => setTick((x) => x + 1))}>Approve for publication</button>
+            <button
+              className="primary"
+              disabled={!runsLoaded || !gate.canApprove}
+              aria-describedby={gate.canApprove ? undefined : `gate-${p.id}`}
+              title={gate.canApprove ? undefined : gate.reason}
+              onClick={() => act(() => window.api.approveProduction(p.id, note)).then(() => setTick((x) => x + 1))}
+            >
+              Approve for publication
+            </button>
             <button className="danger" onClick={() => act(() => window.api.rejectProduction(p.id, note)).then(() => setTick((x) => x + 1))}>Reject</button>
           </>
         )}

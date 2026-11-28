@@ -12,6 +12,7 @@ import { parseLlmStoryboard } from '../src/main/providers/writers';
 import * as v from '../src/main/validation';
 import { DEFAULT_SETTINGS, type Source } from '../src/shared/production';
 import { SOURCES } from './fixtures';
+import { testAudio } from './helpers/audioPlan';
 
 
 
@@ -121,18 +122,19 @@ describe('render plan', () => {
       ],
       captions: 'captions.ass',
       output: 'out.mp4',
-      music: { path: 'F:\\m.mp3', volume: 0.1 }
+      audio: testAudio(2, { music: 'F:\\m.mp3' })
     });
     const fc = args[args.indexOf('-filter_complex') + 1];
     expect(fc).toContain('s=1080x1920');
-    expect(fc).toContain('concat=n=2:v=1:a=1');
+    expect(fc).toContain("concat=n=2:v=1:a=0"); // video only; the soundtrack is assembled separately
     expect(fc).toContain('ass=captions.ass');
-    expect(fc).toContain('sidechaincompress');
+    expect(fc).toContain('amultiply'); // music multiplied by the precomputed ducking envelope
+    expect(fc).toContain('volume=-4.00dB'); // measured gain, not a volume percentage
     expect(args).toEqual(expect.arrayContaining(['-c:v', 'libx264', '-c:a', 'aac', '-stream_loop', '-1']));
     expect(args[args.indexOf('-t') + 1]).toBe('3.500');
   });
   it('refuses an empty plan', () => {
-    expect(() => buildRenderArgs({ scenes: [], captions: 'c.ass', output: 'o.mp4' })).toThrow(/no scenes/);
+    expect(() => buildRenderArgs({ scenes: [], captions: 'c.ass', output: 'o.mp4', audio: testAudio(0) })).toThrow(/no scenes/);
   });
 });
 
